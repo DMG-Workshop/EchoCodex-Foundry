@@ -1,0 +1,13 @@
+<div class="echo-codex-export-summary">
+  <p>Export session notes for <strong>{{meta.sceneName}}</strong>?</p>
+  <ul>
+    <li>{{totalCount}} items checked</li>
+    {{#if separateGMNotes}}
+    <li>{{gmOnlyCount}} marked GM-only (kept out of the player handout)</li>
+    <li>{{playerCount}} will appear on the player handout</li>
+    {{else}}
+    <li>All of them go into one journal visible to the whole table</li>
+    {{/if}}
+  </ul>
+  <p>Filed under <strong>Echo Codex — {{meta.campaignName}}</strong>.</p>
+</div>
