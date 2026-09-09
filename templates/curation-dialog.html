@@ -1,0 +1,56 @@
+<div class="echo-codex-curation">
+  {{#if meta}}
+  <header class="session-meta">
+    <strong>{{meta.campaignName}}</strong> — {{meta.sceneName}}
+    {{#if summary}}<p class="summary">{{summary}}</p>{{/if}}
+  </header>
+  {{/if}}
+
+  {{#unless hasRows}}
+  <p class="empty-state">No session notes yet. The GM sees them here once a recording has been processed.</p>
+  {{/unless}}
+
+  {{#each groups}}
+  <section class="row-group">
+    <h3>{{label}}</h3>
+    <ul class="row-list">
+      {{#each rows}}
+      <li class="curation-row {{#if gmOnly}}gm-only{{/if}} {{#unless included}}excluded{{/unless}}" data-row-id="{{id}}">
+        <div class="row-main">
+          {{#if ../../isGM}}
+          <input type="checkbox" class="row-include" data-row-id="{{id}}" {{#if included}}checked{{/if}} title="Include in export" />
+          <input type="checkbox" class="row-merge-select" data-row-id="{{id}}" {{#if selectedForMerge}}checked{{/if}} title="Select to merge" />
+          <textarea class="row-text" data-row-id="{{id}}" rows="2">{{text}}</textarea>
+          <label class="gm-only-toggle" title="Keep this out of the player handout">
+            <input type="checkbox" class="row-gmonly" data-row-id="{{id}}" {{#if gmOnly}}checked{{/if}} /> GM
+          </label>
+          {{else}}
+          <p class="row-readonly">{{display}}</p>
+          {{/if}}
+        </div>
+
+        {{#if hasQuote}}
+        <p class="row-quote" title="The transcript span this came from">“{{sourceRef.quote}}”</p>
+        {{/if}}
+
+        {{#if ../../enableVoting}}
+        <div class="row-votes">
+          <button type="button" class="vote-keep {{#if myVoteKeep}}active{{/if}}">Keep {{tally.keep}}</button>
+          <button type="button" class="vote-drop {{#if myVoteDrop}}active{{/if}}">Drop {{tally.drop}}</button>
+          {{#if hasVote}}<button type="button" class="vote-clear">clear</button>{{/if}}
+        </div>
+        {{/if}}
+      </li>
+      {{/each}}
+    </ul>
+  </section>
+  {{/each}}
+
+  {{#if isGM}}
+  <footer class="curation-actions">
+    <span class="included-count">{{includedCount}} checked</span>
+    <button type="button" class="merge-selected" {{#unless mergeCount}}disabled{{/unless}}>Merge ({{mergeCount}})</button>
+    <button type="button" class="export-notes">Export to journal</button>
+  </footer>
+  {{/if}}
+</div>
