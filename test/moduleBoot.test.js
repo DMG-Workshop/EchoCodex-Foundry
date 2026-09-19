@@ -83,7 +83,7 @@ test('the module registers an init and a ready hook', () => {
 test('init registers every setting the pipeline reads', () => {
   hooks.get('init')();
   const expected = [
-    'importNote', 'recordingSource', 'clipMinutes',
+    'importNote', 'recordingSource', 'clipMinutes', 'transcribeDuringSession',
     'sttProvider', 'sttBaseUrl', 'sttApiKey', 'sttModel', 'sttLanguage',
     'structureProvider', 'structureBaseUrl', 'structureApiKey', 'structureModel',
     'glossary', 'enablePlayerVoting', 'separateGMNotes'
@@ -171,5 +171,19 @@ test('a world that throws while being read costs the notes, not the recording', 
     assert.deepEqual(globalThis.EchoCodexNotes.collectVocabulary(), []);
   } finally {
     globalThis.canvas.scene = scene;
+  }
+});
+
+test('streaming transcription is on by default', () => {
+  hooks.get('init')();
+  const setting = registered.get('transcribeDuringSession');
+  assert.equal(setting.type, Boolean);
+  assert.equal(setting.default, true);
+  assert.equal(setting.scope, 'client');
+});
+
+test('the recovery entry points the notification names actually exist', () => {
+  for (const fn of ['recoverSessions', 'processStoredSession', 'discardStoredSession']) {
+    assert.equal(typeof globalThis.EchoCodexNotes[fn], 'function', `missing: ${fn}`);
   }
 });

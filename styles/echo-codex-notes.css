@@ -154,3 +154,9 @@
   color: #d9822b;
   font-style: italic;
 }
+
+/* Transcription catching up behind the recording. */
+.echo-codex-indicator .status-detail {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}

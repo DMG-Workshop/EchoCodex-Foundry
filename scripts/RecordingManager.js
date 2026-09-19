@@ -1,3 +1,5 @@
+import { newSessionId } from './ClipStore.js';
+
 const MODULE_ID = 'echo-codex-notes';
 
 /**
@@ -20,7 +22,12 @@ export class RecordingManager {
     // itself is a synthetic AudioContext destination stream, not one of these.
     this.rawStreams = [];
     this.audioContext = null;
-    this.clips = []; // { blob, offsetMs } — one per rotation, in session order
+    this.clips = []; // { blob, offsetMs, index } — one per rotation, in session order
+    this.clipIndex = 0;
+    this.sessionId = null;
+    // Called as each clip closes, so transcription can start during play
+    // instead of queueing twenty uploads for the moment the game ends.
+    this.onClipReady = null;
     this.isRecording = false;
     this.isPaused = false;
     this.startTime = null;
@@ -88,6 +95,8 @@ export class RecordingManager {
       this.sessionMetadata.startTime = new Date();
 
       this.clips = [];
+      this.clipIndex = 0;
+      this.sessionId = newSessionId();
       this.chunkMs = Number(game.settings.get(MODULE_ID, 'clipMinutes') || 0) * 60_000;
       this.isRecording = true;
       this.isPaused = false;
@@ -127,6 +136,7 @@ export class RecordingManager {
     const recorder = new MediaRecorder(this.audioStream, mimeType ? { mimeType } : {});
     const chunks = [];
     const offsetMs = this.clipStartedAtMs;
+    const index = this.clipIndex++;
 
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data);
@@ -140,7 +150,17 @@ export class RecordingManager {
 
     recorder.onstop = () => {
       const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-      if (blob.size > 0) this.clips.push({ blob, offsetMs });
+      if (blob.size > 0) {
+        const clip = { blob, offsetMs, index };
+        this.clips.push(clip);
+        try {
+          this.onClipReady?.(clip, this.sessionId);
+        } catch (error) {
+          // Handing the clip onward is a convenience; the clip itself is
+          // already safe in `clips` and must not be lost to a listener fault.
+          console.error(`${MODULE_ID} | Clip handler failed`, error);
+        }
+      }
       recorder.onStopped?.();
     };
 
@@ -233,6 +253,7 @@ export class RecordingManager {
     }
 
     const clips = [...this.clips].sort((a, b) => a.offsetMs - b.offsetMs);
+    const sessionId = this.sessionId;
     const metadata = { ...this.sessionMetadata, endTime: new Date() };
     const segments = this.segments;
 
@@ -256,7 +277,7 @@ export class RecordingManager {
     window.EchoCodexNotes.updateIndicator('processing');
     this.showNotification('Recording stopped. Processing...', 'info');
 
-    return { clips, metadata, segments };
+    return { clips, metadata, segments, sessionId };
   }
 
   /** Resolves once the active recorder's final blob has landed in `clips`. */

@@ -44,6 +44,42 @@ paths produce the same shape of notes. `scripts/noteDocumentSchema.js` is
 generated from `docs/schemas/note-document.schema.json` in the main EchoCodex
 repository — regenerate it rather than editing by hand.
 
+### Transcribing as you play
+
+By default each clip is transcribed the moment it closes, while the game
+continues. A four-hour session would otherwise end with twenty-odd sequential
+uploads and the table watching a spinner; this way most of the work is done
+before anyone says "that's a wrap", and a wrong API key shows up ten minutes in
+rather than at the end of the night.
+
+Clips go up one at a time, not in parallel, so transcription does not compete
+with voice chat for bandwidth. The tail of each transcript is passed as context
+for the next clip, which is what keeps a sentence severed by a rotation boundary
+from being transcribed cold. A clip that fails does not stop the queue — the
+rest still transcribe, and the notes say which stretches are missing.
+
+Turn off **Transcribe during the session** to keep the table entirely offline
+until the game ends.
+
+Structuring still happens once, at the end, and deliberately so: judging what
+the party actually committed to — as opposed to what they weighed aloud and
+dropped — needs the whole session. A decision made in the first hour and
+reversed in the fourth would otherwise be recorded twice, as two decisions.
+
+### Recovering an interrupted session
+
+Clips are written to browser storage as they are recorded, so a refresh, a
+crashed tab or a failed upload run no longer loses the session. The GM is told
+on load when an unfinished recording is waiting, and it can be picked back up:
+
+```js
+EchoCodexNotes.recoverSessions()                  // what is stored
+EchoCodexNotes.processStoredSession('<sessionId>') // turn it into notes
+EchoCodexNotes.discardStoredSession('<sessionId>') // throw it away
+```
+
+Stored clips are deleted once they have successfully become notes.
+
 ### Keeping audio local
 
 Both stages take a base URL. Point the transcription endpoint at a local
@@ -116,6 +152,7 @@ synced to players. Configure per stage in module settings:
 |---|---|
 | Recording source | Microphone, system audio, or both mixed |
 | Clip length | Minutes per audio clip (default 10). 0 records one file |
+| Transcribe during the session | Transcribe each clip as it closes (default on) |
 | Transcription provider / endpoint / key / model | OpenAI-compatible (default `whisper-1`) or Gemini |
 | Spoken language | ISO-639-1 code, or blank to detect per clip |
 | Structuring provider / endpoint / key / model | Claude (default `claude-opus-5`), OpenAI-compatible, or Gemini |

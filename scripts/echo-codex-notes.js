@@ -1,7 +1,9 @@
 import { RecordingManager } from './RecordingManager.js';
 import { CurationUI, SOCKET } from './CurationUI.js';
 import { flattenDocument } from './curationModel.js';
-import { transcribe, structure } from './providers.js';
+import { transcribe, transcribeClip, structure } from './providers.js';
+import { TranscriptionQueue } from './TranscriptionQueue.js';
+import { ClipStore, createIndexedDbBackend, createMemoryBackend } from './ClipStore.js';
 import { escapeHtml } from './html.js';
 import { extensionFor } from './transcript.js';
 import { collectVocabulary, parseTermList } from './vocabulary.js';
@@ -12,6 +14,9 @@ class EchoCodexNotes {
   static recorder = new RecordingManager();
   static activeCuration = null;
   static durationInterval = null;
+  static clipStore = null;
+  static queue = null;
+  static sessionVocabulary = [];
 
   static registerSettings() {
     const register = (key, data) => game.settings.register(MODULE_ID, key, data);
@@ -51,6 +56,17 @@ class EchoCodexNotes {
       type: Number,
       range: { min: 0, max: 60, step: 5 },
       default: 10
+    });
+
+    register('transcribeDuringSession', {
+      name: 'Transcribe during the session',
+      hint: 'Send each clip for transcription as it is recorded, instead of queueing every upload '
+        + 'for the moment you stop. Notes arrive far sooner and a bad key shows up in minutes, '
+        + 'not hours. Turn off to keep the table entirely offline until the game ends.',
+      scope: 'client',
+      config: true,
+      type: Boolean,
+      default: true
     });
 
     // --- Stage 1: speech to text -------------------------------------
@@ -187,6 +203,7 @@ class EchoCodexNotes {
     indicator.innerHTML = `
       <span class="status-dot"></span>
       <span class="status-text">Echo Codex</span>
+      <span class="status-detail"></span>
     `;
     indicator.addEventListener('click', () => this.openCuration());
     anchor.prepend(indicator);
@@ -204,6 +221,11 @@ class EchoCodexNotes {
         processing: 'Processing…',
         error: 'Error'
       }[status] ?? status;
+    }
+
+    if (status === 'ready' || status === 'error') {
+      const detail = document.querySelector('#echo-codex-indicator .status-detail');
+      if (detail) detail.textContent = '';
     }
 
     clearInterval(this.durationInterval);
@@ -225,7 +247,59 @@ class EchoCodexNotes {
       ui.notifications.warn('A recording is already running.');
       return;
     }
+
+    // Read once, at the top: the vocabulary has to be ready before the first
+    // clip closes, because that clip is transcribed while the game is running.
+    this.sessionVocabulary = this.collectVocabulary();
+    this.queue = this.createQueue();
+
+    const live = game.settings.get(MODULE_ID, 'transcribeDuringSession');
+    this.recorder.onClipReady = (clip, sessionId) => {
+      this.persistClip(sessionId, clip);
+      if (live) this.queue.enqueue(clip);
+    };
+
     await this.recorder.startRecording();
+  }
+
+  static createQueue() {
+    return new TranscriptionQueue({
+      transcribeClip: (clip, { previousTail }) =>
+        transcribeClip(clip, { vocabulary: this.sessionVocabulary, previousTail }),
+      onProgress: (state) => this.updateTranscriptionProgress(state),
+      onError: (error, clip) =>
+        console.warn(`${MODULE_ID} | Clip ${(clip.index ?? 0) + 1} failed to transcribe`, error)
+    });
+  }
+
+  /**
+   * Shows transcription catching up behind the recording, so a GM can tell at a
+   * glance whether stopping now means a wait.
+   */
+  static updateTranscriptionProgress(state) {
+    const indicator = document.querySelector('#echo-codex-indicator .status-detail');
+    if (!indicator) return;
+    indicator.textContent = state.pending
+      ? ` · ${state.completed}/${state.enqueued}`
+      : '';
+  }
+
+  static getClipStore() {
+    if (!this.clipStore) {
+      const backend = createIndexedDbBackend() ?? createMemoryBackend();
+      this.clipStore = new ClipStore(backend);
+    }
+    return this.clipStore;
+  }
+
+  static async persistClip(sessionId, clip) {
+    try {
+      await this.getClipStore().put(sessionId, clip);
+    } catch (error) {
+      // Storage being full or blocked is not a reason to stop recording; the
+      // clip is still in memory for this session.
+      console.warn(`${MODULE_ID} | Could not store clip ${clip.index}`, error);
+    }
   }
 
   static pauseRecording() {
@@ -246,16 +320,28 @@ class EchoCodexNotes {
       return;
     }
 
+    // Written now rather than at start: only at stop is the session's own shape
+    // known, and it is what names the recording if recovery is ever needed.
+    await this.getClipStore()
+      .attachMetadata(result.sessionId, result.metadata)
+      .catch(() => {});
+
     const notify = (message) => {
       this.updateIndicator('processing');
       ui.notifications.info(message);
     };
 
     try {
-      const vocabulary = this.collectVocabulary();
-      const segments = await transcribe(result.clips, { onProgress: notify, vocabulary });
+      const vocabulary = this.sessionVocabulary.length
+        ? this.sessionVocabulary
+        : this.collectVocabulary();
+
+      const segments = await this.transcribeSession(result, { notify, vocabulary });
       const transcriptText = segments.map(s => s.text).join(' ').trim();
       if (!transcriptText) throw new Error('The transcript came back empty.');
+
+      const gaps = this.queue?.describeGaps();
+      if (gaps) ui.notifications.warn(`Echo Codex: ${gaps}`);
 
       const doc = await structure(segments, this.buildContext(result, vocabulary), { onProgress: notify });
       const rows = flattenDocument(doc);
@@ -264,6 +350,8 @@ class EchoCodexNotes {
       }
 
       this.updateIndicator('ready');
+      // The audio has become notes; keeping it would only accumulate.
+      await this.getClipStore().deleteSession(result.sessionId).catch(() => {});
       CurationUI.open({ doc, meta: result.metadata, rows });
     } catch (error) {
       console.error(`${MODULE_ID} | Processing failed`, error);
@@ -272,6 +360,32 @@ class EchoCodexNotes {
       // The recording is gone once we return, so hand it back rather than drop it.
       this.offerAudioDownload(result.clips);
     }
+  }
+
+  /**
+   * Finishes the transcript, using whatever the live queue already did.
+   *
+   * With streaming on, most clips are transcribed before the session ends and
+   * only the last one is outstanding; with it off, the queue is empty and this
+   * is the original all-at-once path.
+   */
+  static async transcribeSession(result, { notify, vocabulary }) {
+    const queue = this.queue;
+    if (!queue || !queue.enqueued) {
+      return transcribe(result.clips, { onProgress: notify, vocabulary });
+    }
+
+    // Clips are enqueued in order as they close, so anything at or past the
+    // enqueued count is new — in practice the final clip, which only closes at
+    // stop and so was never handed over during play.
+    for (const clip of result.clips) {
+      if (clip.index >= queue.enqueued) queue.enqueue(clip);
+    }
+
+    if (queue.state.pending) {
+      notify(`Finishing transcription (${queue.state.completed}/${queue.state.enqueued})…`);
+    }
+    return queue.drain();
   }
 
   /**
@@ -297,6 +411,98 @@ class EchoCodexNotes {
         ? `The recording was saved to your downloads as ${clips.length} clips so it is not lost.`
         : 'The recording was saved to your downloads so it is not lost.'
     );
+  }
+
+  /**
+   * Recovers a session that was interrupted before it became notes.
+   *
+   * A refresh mid-game, a crashed tab, a failed upload run — the clips are on
+   * disk either way, and without a way back in they were only ever a folder of
+   * webm files nobody could use.
+   */
+  static async recoverSessions() {
+    if (!this.requireGM()) return [];
+    try {
+      return await this.getClipStore().listSessions();
+    } catch (error) {
+      console.error(`${MODULE_ID} | Could not read stored recordings`, error);
+      ui.notifications.error('Echo Codex: stored recordings could not be read.');
+      return [];
+    }
+  }
+
+  /** Runs the pipeline over a stored session, as if it had just been recorded. */
+  static async processStoredSession(sessionId) {
+    if (!this.requireGM()) return;
+
+    const store = this.getClipStore();
+    const [clips, sessions] = await Promise.all([
+      store.listSession(sessionId),
+      store.listSessions()
+    ]);
+    if (!clips.length) {
+      ui.notifications.warn('Echo Codex: no clips are stored for that session.');
+      return;
+    }
+
+    const stored = sessions.find(s => s.sessionId === sessionId);
+    const metadata = stored?.metadata ?? {
+      campaignName: game.world.title,
+      sceneName: canvas?.scene?.name ?? 'Recovered session',
+      players: [],
+      gm: game.user.name,
+      startTime: new Date(stored?.storedAt ?? Date.now()),
+      endTime: new Date(stored?.storedAt ?? Date.now())
+    };
+
+    const notify = (message) => {
+      this.updateIndicator('processing');
+      ui.notifications.info(message);
+    };
+
+    try {
+      const vocabulary = this.collectVocabulary();
+      // A fresh queue: this run has no live progress behind it.
+      this.queue = this.createQueue();
+      for (const clip of clips) this.queue.enqueue(clip);
+      const segments = await this.queue.drain();
+
+      const transcriptText = segments.map(s => s.text).join(' ').trim();
+      if (!transcriptText) throw new Error('The transcript came back empty.');
+
+      const gaps = this.queue.describeGaps();
+      if (gaps) ui.notifications.warn(`Echo Codex: ${gaps}`);
+
+      const doc = await structure(segments, this.buildContext({ metadata }, vocabulary), { onProgress: notify });
+      this.updateIndicator('ready');
+      await store.deleteSession(sessionId).catch(() => {});
+      CurationUI.open({ doc, meta: metadata, rows: flattenDocument(doc) });
+    } catch (error) {
+      console.error(`${MODULE_ID} | Recovery failed`, error);
+      ui.notifications.error(`Echo Codex: ${error.message}`);
+      this.updateIndicator('error');
+      // Deliberately not deleted: the clips are the only copy left.
+    }
+  }
+
+  /** Tells the GM, once per load, that an interrupted session is still recoverable. */
+  static async announceRecoverableSessions() {
+    const sessions = await this.recoverSessions();
+    if (!sessions.length) return;
+
+    const [newest] = sessions;
+    ui.notifications.warn(
+      `Echo Codex: an unfinished recording is stored (${newest.clipCount} clips, `
+      + `~${Math.round(newest.bytes / 1048576)} MB). `
+      + `Run EchoCodexNotes.processStoredSession('${newest.sessionId}') to turn it into notes, `
+      + `or EchoCodexNotes.discardStoredSession('${newest.sessionId}') to delete it.`
+    );
+  }
+
+  static async discardStoredSession(sessionId) {
+    if (!this.requireGM()) return;
+    const removed = await this.getClipStore().deleteSession(sessionId);
+    ui.notifications.info(`Echo Codex: discarded ${removed} stored clips.`);
   }
 
   static openCuration() {
@@ -339,7 +545,10 @@ class EchoCodexNotes {
   }
 
   static buildContext(result, vocabulary = []) {
-    const durationMs = new Date(result.metadata.endTime) - new Date(result.metadata.startTime);
+    const durationMs = Math.max(
+      0,
+      new Date(result.metadata.endTime) - new Date(result.metadata.startTime)
+    ) || 0;
     return {
       referenceDate: new Date(result.metadata.startTime).toISOString().slice(0, 10),
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -427,6 +636,8 @@ Hooks.once("ready", () => {
   // One listener for the lifetime of the client: curation outlives its window,
   // so answering players cannot depend on a dialog being open.
   game.socket.on(SOCKET, (payload) => CurationUI.handleSocket(payload));
+
+  if (game.user.isGM) EchoCodexNotes.announceRecoverableSessions();
 });
 
 window.EchoCodexNotes = EchoCodexNotes;

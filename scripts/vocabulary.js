@@ -103,3 +103,25 @@ record the heard form in that participant's \`aliases\`. Do not force a match: a
 that is not on this list is not evidence of an error, and inventing a correction is
 worse than leaving the transcript's own wording alone.`;
 }
+
+/**
+ * The full Stage 1 prompt for one clip: the campaign's names, plus where the
+ * previous clip left off.
+ *
+ * Carrying the tail across a rotation boundary is the documented way to keep
+ * chunked audio coherent — without it, a sentence severed by a rotation is
+ * transcribed cold, which is exactly where Whisper invents words. The tail gets
+ * a reserved slice of the budget so a long transcript cannot crowd out the
+ * names, and the names cannot crowd out the tail.
+ */
+export function buildClipPrompt({
+  vocabulary = [],
+  previousTail = '',
+  maxChars = WHISPER_PROMPT_MAX_CHARS,
+  tailReserve = 220
+} = {}) {
+  const tail = String(previousTail ?? '').trim().slice(-tailReserve);
+  const namesBudget = maxChars - (tail ? tail.length + 1 : 0);
+  const names = buildWhisperPrompt(vocabulary, { maxChars: Math.max(0, namesBudget) });
+  return [names, tail].filter(Boolean).join(' ');
+}
