@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
  */
 
 const registered = new Map();
+const overrides = new Map();
 const hooks = new Map();
 const sockets = new Map();
 const notifications = [];
@@ -43,14 +44,27 @@ globalThis.game = {
   user: { isGM: true, id: 'gm1', name: 'The GM' },
   users: Object.assign([], { activeGM: { id: 'gm1' } }),
   folders: [],
+  actors: {
+    contents: [
+      { name: 'Mira Stonehand', hasPlayerOwner: true },
+      { name: 'Tolen Ashfield', hasPlayerOwner: true },
+      { name: 'Goblin Skirmisher', hasPlayerOwner: false }
+    ]
+  },
   settings: {
     register: (module, key, data) => registered.set(key, data),
-    get: (module, key) => registered.get(key)?.default,
-    set: async () => {}
+    get: (module, key) => overrides.has(key) ? overrides.get(key) : registered.get(key)?.default,
+    set: async (module, key, value) => overrides.set(key, value)
   },
   socket: {
     on: (name, fn) => sockets.set(name, fn),
     emit: () => {}
+  }
+};
+globalThis.canvas = {
+  scene: {
+    name: 'The toll road',
+    tokens: { contents: [{ name: 'Toll Guard', actor: { name: 'Ser Aldric' } }] }
   }
 };
 globalThis.window = globalThis;
@@ -70,9 +84,9 @@ test('init registers every setting the pipeline reads', () => {
   hooks.get('init')();
   const expected = [
     'importNote', 'recordingSource', 'clipMinutes',
-    'sttProvider', 'sttBaseUrl', 'sttApiKey', 'sttModel',
+    'sttProvider', 'sttBaseUrl', 'sttApiKey', 'sttModel', 'sttLanguage',
     'structureProvider', 'structureBaseUrl', 'structureApiKey', 'structureModel',
-    'enablePlayerVoting', 'separateGMNotes'
+    'glossary', 'enablePlayerVoting', 'separateGMNotes'
   ];
   for (const key of expected) assert.ok(registered.has(key), `setting not registered: ${key}`);
 });
@@ -121,4 +135,41 @@ test('players are turned away from the recording controls', async () => {
   await globalThis.EchoCodexNotes.startRecording();
   assert.deepEqual(notifications, [['warn', 'Only the GM can control session recording.']]);
   game.user.isGM = true;
+});
+
+test('the glossary is world-scoped so it survives the GM changing machines', () => {
+  hooks.get('init')();
+  assert.equal(registered.get('glossary').scope, 'world');
+  assert.equal(registered.get('sttLanguage').scope, 'client');
+});
+
+test('the vocabulary draws on the glossary, the party, the scene and the directory', () => {
+  hooks.get('init')();
+  overrides.set('glossary', 'The Ashen Pact, Redbridge');
+
+  const terms = globalThis.EchoCodexNotes.collectVocabulary();
+
+  assert.deepEqual(terms.slice(0, 2), ['The Ashen Pact', 'Redbridge'], 'glossary leads');
+  assert.ok(terms.includes('Mira Stonehand'), 'player characters are included');
+  assert.ok(terms.includes('Ser Aldric'), 'actors on the current scene are included');
+  assert.ok(terms.includes('Goblin Skirmisher'), 'the rest of the directory follows');
+  // Priority order is what survives truncation, so it is load-bearing.
+  assert.ok(terms.indexOf('Mira Stonehand') < terms.indexOf('Goblin Skirmisher'));
+});
+
+test('an empty glossary still yields the world\'s own names', () => {
+  hooks.get('init')();
+  overrides.set('glossary', '');
+  assert.ok(globalThis.EchoCodexNotes.collectVocabulary().includes('Mira Stonehand'));
+});
+
+test('a world that throws while being read costs the notes, not the recording', () => {
+  hooks.get('init')();
+  const scene = globalThis.canvas.scene;
+  globalThis.canvas.scene = { get tokens() { throw new Error('scene not ready'); } };
+  try {
+    assert.deepEqual(globalThis.EchoCodexNotes.collectVocabulary(), []);
+  } finally {
+    globalThis.canvas.scene = scene;
+  }
 });

@@ -4,6 +4,7 @@ import { flattenDocument } from './curationModel.js';
 import { transcribe, structure } from './providers.js';
 import { escapeHtml } from './html.js';
 import { extensionFor } from './transcript.js';
+import { collectVocabulary, parseTermList } from './vocabulary.js';
 
 const MODULE_ID = 'echo-codex-notes';
 
@@ -91,6 +92,16 @@ class EchoCodexNotes {
       default: 'whisper-1'
     });
 
+    register('sttLanguage', {
+      name: 'Spoken language',
+      hint: 'ISO-639-1 code for the language at your table, such as en, de or pt. '
+        + 'Leave blank to detect it, which can vary clip to clip on a quiet recording.',
+      scope: 'client',
+      config: true,
+      type: String,
+      default: ''
+    });
+
     // --- Stage 2: structuring ----------------------------------------
     register('structureProvider', {
       name: 'Structuring provider',
@@ -130,6 +141,20 @@ class EchoCodexNotes {
       config: true,
       type: String,
       default: 'claude-opus-5'
+    });
+
+    // --- Campaign vocabulary ------------------------------------------
+    // World-scoped on purpose, unlike the API keys: this is campaign data the
+    // whole table shares, and it should survive the GM switching machines.
+    register('glossary', {
+      name: 'Campaign glossary',
+      hint: 'Names the transcriber keeps getting wrong — people, places, factions, items. '
+        + 'Separate with commas or new lines. Character and NPC names from the Actors '
+        + 'directory are included automatically; this is for everything else.',
+      scope: 'world',
+      config: true,
+      type: String,
+      default: ''
     });
 
     // --- Table workflow ----------------------------------------------
@@ -227,11 +252,12 @@ class EchoCodexNotes {
     };
 
     try {
-      const segments = await transcribe(result.clips, { onProgress: notify });
+      const vocabulary = this.collectVocabulary();
+      const segments = await transcribe(result.clips, { onProgress: notify, vocabulary });
       const transcriptText = segments.map(s => s.text).join(' ').trim();
       if (!transcriptText) throw new Error('The transcript came back empty.');
 
-      const doc = await structure(segments, this.buildContext(result), { onProgress: notify });
+      const doc = await structure(segments, this.buildContext(result, vocabulary), { onProgress: notify });
       const rows = flattenDocument(doc);
       if (!rows.length) {
         ui.notifications.warn('Nothing structured out of this recording — the transcript may be too short.');
@@ -286,7 +312,33 @@ class EchoCodexNotes {
     CurationUI.openFollower();
   }
 
-  static buildContext(result) {
+  /**
+   * The campaign's proper nouns, from the GM's glossary and the world itself.
+   *
+   * Read at processing time rather than at record time so a name added while
+   * the session was running still counts.
+   */
+  static collectVocabulary() {
+    try {
+      const actors = game.actors?.contents ?? [];
+      const tokens = canvas?.scene?.tokens?.contents ?? [];
+
+      return collectVocabulary({
+        glossary: parseTermList(game.settings.get(MODULE_ID, 'glossary')),
+        // The party is spoken about constantly, so it outranks the directory.
+        playerCharacters: actors.filter(a => a.hasPlayerOwner).map(a => a.name),
+        sceneActors: tokens.map(t => t.actor?.name ?? t.name),
+        otherActors: actors.map(a => a.name)
+      });
+    } catch (error) {
+      // Better notes are the point of this; they are not worth losing a
+      // four-hour recording over.
+      console.warn(`${MODULE_ID} | Could not assemble the campaign vocabulary`, error);
+      return [];
+    }
+  }
+
+  static buildContext(result, vocabulary = []) {
     const durationMs = new Date(result.metadata.endTime) - new Date(result.metadata.startTime);
     return {
       referenceDate: new Date(result.metadata.startTime).toISOString().slice(0, 10),
@@ -296,7 +348,8 @@ class EchoCodexNotes {
       campaignName: result.metadata.campaignName,
       sceneName: result.metadata.sceneName,
       gm: result.metadata.gm,
-      players: result.metadata.players
+      players: result.metadata.players,
+      vocabulary
     };
   }
 
