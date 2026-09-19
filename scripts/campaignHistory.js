@@ -50,3 +50,44 @@ export function findPreviousSession(journals = []) {
   if (!entries.length) return null;
   return entries.sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt))[0];
 }
+
+/**
+ * The campaign so far, as one rolling journal.
+ *
+ * Individual session journals answer "what happened that night"; nothing
+ * answered "what has happened". This assembles one index from the continuity
+ * records each export already leaves behind.
+ */
+export function buildCampaignIndex(journals = []) {
+  const sessions = journals
+    .map(journal => ({
+      history: journal.flags?.[MODULE_ID]?.history,
+      name: journal.name,
+      uuid: journal.uuid ?? null
+    }))
+    .filter(entry => entry.history?.summary)
+    .sort((a, b) => new Date(a.history.recordedAt) - new Date(b.history.recordedAt));
+
+  return sessions.map(entry => ({
+    title: entry.history.title ?? entry.name,
+    summary: entry.history.summary,
+    recordedAt: entry.history.recordedAt,
+    openQuestions: entry.history.openQuestions ?? [],
+    uuid: entry.uuid
+  }));
+}
+
+/** Threads raised and never since resolved — what the GM most often wants back. */
+export function outstandingThreads(index = []) {
+  const seen = new Set();
+  const threads = [];
+  for (const session of index) {
+    for (const question of session.openQuestions ?? []) {
+      const key = question.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      threads.push({ question, since: session.recordedAt, from: session.title });
+    }
+  }
+  return threads;
+}

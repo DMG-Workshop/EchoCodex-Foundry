@@ -4,6 +4,7 @@ import { buildClipPrompt, renderVocabularySection } from './vocabulary.js';
 import { renderSessionLog } from './sessionLog.js';
 import { renderPreviousSession } from './campaignHistory.js';
 import {
+  approximateTiming,
   extensionFor,
   offsetSegments,
   parseNoteDocument,
@@ -50,9 +51,9 @@ export async function transcribeClip(clip, { vocabulary = [], previousTail = '' 
     prompt: buildClipPrompt({ vocabulary, previousTail }),
     language: String(setting('sttLanguage') || '').trim()
   };
-  return provider === 'gemini'
-    ? transcribeGemini(clip.blob, options)
-    : transcribeOpenAiCompatible(clip.blob, options);
+  if (provider !== 'gemini') return transcribeOpenAiCompatible(clip.blob, options);
+  const segments = await transcribeGemini(clip.blob, options);
+  return approximateTiming(segments, { offsetMs: 0 });
 }
 
 export async function transcribe(clips, { onProgress, vocabulary = [] } = {}) {
@@ -182,7 +183,9 @@ async function transcribeGemini(audioBlob, { prompt } = {}) {
 
   const data = await response.json();
   const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? '';
-  // Gemini returns prose, not timed segments, so there is nothing to anchor sourceRefs to.
+  // Gemini returns prose, not timed segments. Clip-level timing is coarse but
+  // it is the difference between "somewhere in hour three" and nothing at all;
+  // the caller stamps the clip's own offset on.
   return [{ startMs: null, endMs: null, text }];
 }
 

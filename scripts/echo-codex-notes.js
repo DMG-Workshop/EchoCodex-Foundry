@@ -6,7 +6,10 @@ import { TranscriptionQueue } from './TranscriptionQueue.js';
 import { ClipStore, createIndexedDbBackend, createMemoryBackend } from './ClipStore.js';
 import { WorldWitness } from './WorldWitness.js';
 import { buildSessionLog } from './sessionLog.js';
-import { findPreviousSession, summarizeForHistory } from './campaignHistory.js';
+import {
+  findPreviousSession, summarizeForHistory, buildCampaignIndex, outstandingThreads
+} from './campaignHistory.js';
+import { estimateCost, estimateTranscriptionMinutes, describeEstimate } from './costEstimate.js';
 import {
   BEACON, describeState, needsConsent, summarizeConsent, describeConsentGate
 } from './recordingBeacon.js';
@@ -63,6 +66,50 @@ class EchoCodexNotes {
       type: Number,
       range: { min: 0, max: 60, step: 5 },
       default: 10
+    });
+
+    register('followGamePause', {
+      name: 'Pause recording with the game',
+      hint: 'When the GM pauses Foundry, pause the recording too, and resume with it. '
+        + 'Keeps breaks out of the transcript without anyone remembering to press anything.',
+      scope: 'client',
+      config: true,
+      type: Boolean,
+      default: true
+    });
+
+    register('showCostEstimate', {
+      name: 'Estimate cost before processing',
+      hint: 'Show a rough price range before sending a session to a paid provider. '
+        + 'Estimates only — check your provider\'s current prices.',
+      scope: 'client',
+      config: true,
+      type: Boolean,
+      default: true
+    });
+
+    register('sttPricePerMinute', {
+      name: 'Transcription price per minute',
+      scope: 'client',
+      config: true,
+      type: Number,
+      default: 0.006
+    });
+
+    register('structureInputPrice', {
+      name: 'Structuring price per million input tokens',
+      scope: 'client',
+      config: true,
+      type: Number,
+      default: 5
+    });
+
+    register('structureOutputPrice', {
+      name: 'Structuring price per million output tokens',
+      scope: 'client',
+      config: true,
+      type: Number,
+      default: 25
     });
 
     register('curationDraft', {
@@ -517,7 +564,16 @@ class EchoCodexNotes {
       const gaps = this.queue?.describeGaps();
       if (gaps) ui.notifications.warn(`Echo Codex: ${gaps}`);
 
+      if (!await this.confirmCost(result.clips, transcriptText)) {
+        this.updateIndicator('ready');
+        return;
+      }
+
       const doc = await structure(segments, this.buildContext(result, vocabulary), { onProgress: notify });
+      // Kept so the GM copy can carry the unedited room alongside the notes.
+      doc.transcript = segments
+        .map(s => (s.startMs == null ? s.text : `[${this.recorder.formatDuration(s.startMs)}] ${s.text}`))
+        .join('\n');
       const rows = flattenDocument(doc);
       if (!rows.length) {
         ui.notifications.warn('Nothing structured out of this recording — the transcript may be too short.');
@@ -707,6 +763,71 @@ class EchoCodexNotes {
     }
   }
 
+  /** Shows what a paid run will cost before it runs. */
+  static async confirmCost(clips, transcriptText) {
+    if (!game.settings.get(MODULE_ID, 'showCostEstimate')) return true;
+
+    const sttPerMinute = Number(game.settings.get(MODULE_ID, 'sttPricePerMinute') || 0);
+    const inputPerMTok = Number(game.settings.get(MODULE_ID, 'structureInputPrice') || 0);
+    const outputPerMTok = Number(game.settings.get(MODULE_ID, 'structureOutputPrice') || 0);
+    // A local endpoint costs nothing; there is nothing to warn about.
+    if (!sttPerMinute && !inputPerMTok && !outputPerMTok) return true;
+
+    const estimate = estimateCost({
+      transcriptChars: transcriptText.length,
+      minutes: estimateTranscriptionMinutes(clips, Number(game.settings.get(MODULE_ID, 'clipMinutes') || 10)),
+      sttPerMinute, inputPerMTok, outputPerMTok
+    });
+    const description = describeEstimate(estimate);
+    if (!description) return true;
+
+    return Dialog.confirm({
+      title: 'Structure these notes?',
+      content: `<p>${escapeHtml(description)}</p>`,
+      defaultYes: true
+    });
+  }
+
+  /** Builds the rolling "campaign so far" journal from what exports already recorded. */
+  static async buildCampaignIndex() {
+    if (!this.requireGM()) return null;
+
+    const index = buildCampaignIndex(game.journal?.contents ?? []);
+    if (!index.length) {
+      ui.notifications.info('Echo Codex: no recorded sessions yet.');
+      return null;
+    }
+
+    const threads = outstandingThreads(index);
+    const body = [
+      `<h2>Sessions</h2><ol>${index.map(s =>
+        `<li><strong>${escapeHtml(s.title)}</strong> — ${escapeHtml(s.summary)}</li>`
+      ).join('')}</ol>`,
+      threads.length
+        ? `<h2>Still open</h2><ul>${threads.map(t =>
+            `<li>${escapeHtml(t.question)} <em>(since ${escapeHtml(t.from)})</em></li>`
+          ).join('')}</ul>`
+        : ''
+    ].filter(Boolean).join('\n');
+
+    const name = `Echo Codex — ${game.world.title} so far`;
+    const existing = game.journal.find(j => j.name === name);
+    if (existing) {
+      const [page] = existing.pages.contents;
+      if (page) await page.update({ 'text.content': body });
+      else await existing.createEmbeddedDocuments('JournalEntryPage', [{ name: 'Campaign', type: 'text', text: { format: CONST.JOURNAL_ENTRY_PAGE_FORMATS.HTML, content: body } }]);
+      ui.notifications.info('Echo Codex: campaign index updated.');
+      return existing;
+    }
+
+    const journal = await JournalEntry.create({ name, flags: { [MODULE_ID]: { source: 'Echo Codex', index: true } } });
+    await journal.createEmbeddedDocuments('JournalEntryPage', [
+      { name: 'Campaign', type: 'text', text: { format: CONST.JOURNAL_ENTRY_PAGE_FORMATS.HTML, content: body } }
+    ]);
+    ui.notifications.info('Echo Codex: campaign index created.');
+    return journal;
+  }
+
   static openCuration() {
     if (game.user.isGM) {
       if (this.activeCuration) {
@@ -864,6 +985,16 @@ Hooks.once("ready", () => {
   // One listener for the lifetime of the client: curation outlives its window,
   // so answering players cannot depend on a dialog being open.
   game.socket.on(SOCKET, (payload) => CurationUI.handleSocket(payload));
+
+  // Breaks are not session content; following the game's own pause keeps them
+  // out without anyone having to remember a macro.
+  Hooks.on('pauseGame', (paused) => {
+    if (!game.user.isGM) return;
+    if (!game.settings.get(MODULE_ID, 'followGamePause')) return;
+    if (!EchoCodexNotes.recorder.isRecording) return;
+    if (paused) EchoCodexNotes.recorder.pauseRecording();
+    else EchoCodexNotes.recorder.resumeRecording();
+  });
 
   if (game.user.isGM) {
     EchoCodexNotes.pruneStoredAudio();

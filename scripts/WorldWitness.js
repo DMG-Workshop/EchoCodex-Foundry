@@ -23,6 +23,10 @@ export class WorldWitness {
       if (name) this.#note('scene', `Scene changed to ${name}`);
     });
 
+    this.#on('pauseGame', (paused) => {
+      this.#note('event', paused ? 'Game paused' : 'Game resumed');
+    });
+
     this.#on('combatStart', (combat) => {
       this.#note('combat', `Combat began${combat?.scene?.name ? ` on ${combat.scene.name}` : ''}`);
     });

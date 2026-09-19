@@ -204,6 +204,30 @@ in an `Echo Codex — <campaign>` folder: a GM-only entry with everything, and a
 player-facing handout with the GM-only rows removed. Turn the setting off to
 get a single journal visible to the whole table.
 
+## Linked, costed, and continuous
+
+Names the world already knows become `@UUID` links in the exported journal, so
+the notes wire into the actors and journals they mention instead of being flat
+text. Matching is conservative — whole words, longest name first, one link per
+entity per line — because a journal riddled with links to the wrong goblin is
+worse than no links.
+
+The GM copy also keeps the **Transcript** as its own page. The player handout
+does not: the transcript is the unfiltered room, including whatever was said
+before anyone decided it was in character.
+
+Before a paid run, a rough **cost estimate** is shown as a range. It is an
+estimate and says so — prices move and providers differ, and a confident wrong
+number is worse than an honest range. Set all three prices to 0, or point at a
+local endpoint, and the prompt disappears entirely.
+
+`EchoCodexNotes.buildCampaignIndex()` assembles a rolling "campaign so far"
+journal from every session's continuity record, with the threads nobody has
+resolved yet collected at the end.
+
+Recording follows Foundry's own pause by default, so a break stays out of the
+transcript without anyone remembering to press anything.
+
 ## Install
 
 Copy this module into your Foundry `Data/modules/echo-codex-notes` directory and

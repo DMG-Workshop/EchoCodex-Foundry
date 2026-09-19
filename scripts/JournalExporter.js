@@ -1,6 +1,7 @@
 import { groupRows, formatRow, GROUPS } from './curationModel.js';
 import { escapeHtml } from './html.js';
 import { summarizeForHistory } from './campaignHistory.js';
+import { buildLinkIndex, linkEntities } from './entityLinks.js';
 
 const MODULE_ID = 'echo-codex-notes';
 
@@ -10,6 +11,7 @@ const MODULE_ID = 'echo-codex-notes';
  */
 export async function exportToJournals({ doc, meta, rows }) {
   const separate = game.settings.get(MODULE_ID, 'separateGMNotes');
+  const linkIndex = collectLinkIndex();
   const dateLabel = new Date(meta.startTime).toLocaleDateString();
   const title = doc?.meta?.title || meta.sceneName || 'Session';
   const folder = await getOrCreateFolder(meta.campaignName);
@@ -25,7 +27,7 @@ export async function exportToJournals({ doc, meta, rows }) {
 
   const gmJournal = await createJournal({
     name: `${title} — ${dateLabel} (GM Notes)`,
-    doc, meta, rows, folder, gmOnly: true,
+    doc, meta, rows, folder, gmOnly: true, linkIndex,
     // Only the GM copy carries continuity: it is the complete record, and the
     // player handout deliberately is not.
     history: summarizeForHistory(doc, rows)
@@ -35,11 +37,26 @@ export async function exportToJournals({ doc, meta, rows }) {
   const playerJournal = playerRows.length
     ? await createJournal({
         name: `${title} — ${dateLabel}`,
-        doc, meta, rows: playerRows, folder, gmOnly: false
+        doc, meta, rows: playerRows, folder, gmOnly: false, linkIndex
       })
     : null;
 
   return { gmJournal, playerJournal };
+}
+
+/** Actors and journals the world already knows, for linking names in the export. */
+function collectLinkIndex() {
+  try {
+    return buildLinkIndex([
+      ...(game.actors?.contents ?? []).map(a => ({ name: a.name, uuid: a.uuid })),
+      ...(game.journal?.contents ?? [])
+        .filter(j => !j.flags?.[MODULE_ID])
+        .map(j => ({ name: j.name, uuid: j.uuid }))
+    ]);
+  } catch (error) {
+    console.warn(`${MODULE_ID} | Could not build the link index`, error);
+    return [];
+  }
 }
 
 async function getOrCreateFolder(campaignName) {
@@ -55,7 +72,7 @@ async function getOrCreateFolder(campaignName) {
   }
 }
 
-async function createJournal({ name, doc, meta, rows, folder, gmOnly, history = null }) {
+async function createJournal({ name, doc, meta, rows, folder, gmOnly, history = null, linkIndex = [] }) {
   const ownership = { default: playerOwnershipLevel(gmOnly) };
 
   const journal = await JournalEntry.create({
@@ -72,7 +89,7 @@ async function createJournal({ name, doc, meta, rows, folder, gmOnly, history = 
     }
   });
 
-  const pages = buildPages({ doc, meta, rows, gmOnly });
+  const pages = buildPages({ doc, meta, rows, gmOnly, linkIndex });
   if (pages.length) await journal.createEmbeddedDocuments('JournalEntryPage', pages);
   return journal;
 }
@@ -86,7 +103,7 @@ export function playerOwnershipLevel(gmOnly, setting = null) {
     : CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER;
 }
 
-export function buildPages({ doc, meta, rows, gmOnly }) {
+export function buildPages({ doc, meta, rows, gmOnly, linkIndex = [] }) {
   const pages = [];
   const page = (pageName, content) => pages.push({
     name: pageName,
@@ -106,7 +123,7 @@ export function buildPages({ doc, meta, rows, gmOnly }) {
   const narrative = rows.filter(r => r.kind === 'section');
   if (narrative.length) {
     const body = groupRows(narrative)
-      .map(group => `<h2>${escapeHtml(group.label)}</h2>\n${list(group.rows, gmOnly)}`)
+      .map(group => `<h2>${escapeHtml(group.label)}</h2>\n${list(group.rows, gmOnly, linkIndex)}`)
       .join('\n');
     page('Notes', body);
   }
@@ -115,15 +132,21 @@ export function buildPages({ doc, meta, rows, gmOnly }) {
   const actions = rows.filter(r => actionKinds.includes(r.kind));
   if (actions.length) {
     const body = groupRows(actions)
-      .map(group => `<h2>${escapeHtml(GROUPS[group.kind])}</h2>\n${list(group.rows, gmOnly)}`)
+      .map(group => `<h2>${escapeHtml(GROUPS[group.kind])}</h2>\n${list(group.rows, gmOnly, linkIndex)}`)
       .join('\n');
     page('Campaign actions', body);
+  }
+
+  // Only on the GM copy: the transcript is the unfiltered room, including
+  // whatever was said before anyone decided it was in character.
+  if (gmOnly && doc?.transcript) {
+    page('Transcript', `<pre>${escapeHtml(doc.transcript)}</pre>`);
   }
 
   const asides = rows.filter(r => r.kind === 'risk' || r.kind === 'timelineAnchor');
   if (asides.length) {
     const body = groupRows(asides)
-      .map(group => `<h2>${escapeHtml(GROUPS[group.kind])}</h2>\n${list(group.rows, gmOnly)}`)
+      .map(group => `<h2>${escapeHtml(GROUPS[group.kind])}</h2>\n${list(group.rows, gmOnly, linkIndex)}`)
       .join('\n');
     page('Threats & dates', body);
   }
@@ -131,14 +154,16 @@ export function buildPages({ doc, meta, rows, gmOnly }) {
   return pages;
 }
 
-function list(rows, gmOnly) {
+function list(rows, gmOnly, linkIndex = []) {
   const items = rows.map(row => {
     // The tag only appears on the GM copy; the player copy never contains these rows.
     const tag = gmOnly && row.gmOnly ? ' <span class="echo-codex-gm-tag">(GM)</span>' : '';
     const quote = row.sourceRef?.quote
       ? `<br><span class="echo-codex-quote">“${escapeHtml(row.sourceRef.quote)}”</span>`
       : '';
-    return `<li>${escapeHtml(formatRow(row))}${tag}${quote}</li>`;
+    // Linked after escaping: linking first would let the escaper mangle the
+    // markup it had just produced.
+    return `<li>${linkEntities(escapeHtml(formatRow(row)), linkIndex)}${tag}${quote}</li>`;
   }).join('\n');
   return `<ul>${items}</ul>`;
 }
