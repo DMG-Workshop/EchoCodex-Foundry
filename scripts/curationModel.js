@@ -114,3 +114,28 @@ export function formatRow(row) {
       return row.text;
   }
 }
+
+/**
+ * What a player's client is allowed to hold.
+ *
+ * Filtering GM-only rows at render time is not enough: the socket payload lands
+ * in every player's browser, where anyone can read it off the console. A row
+ * marked GM-only has to be absent from the message, not merely hidden by the
+ * template. Votes stay, since players need to see the tally they contribute to.
+ */
+export function redactForPlayers(rows) {
+  return rows
+    .filter(row => !row.gmOnly)
+    .map(({ sourceRef, ...row }) => ({
+      ...row,
+      // The quote is the transcript span, which is table-wide by nature; keep it
+      // so players can check a row against what was actually said.
+      sourceRef: sourceRef ? { quote: sourceRef.quote ?? null } : null
+    }));
+}
+
+/** Merging only makes sense within a kind — a decision and a due date do not combine. */
+export function canMerge(rows) {
+  if (rows.length < 2) return false;
+  return rows.every(row => row.kind === rows[0].kind);
+}

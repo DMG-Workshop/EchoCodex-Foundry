@@ -1,3 +1,16 @@
+const MODULE_ID = 'echo-codex-notes';
+
+/**
+ * Captures session audio as a series of independently decodable clips.
+ *
+ * A four-hour session in one webm is roughly 40 MB, and the transcription
+ * endpoint refuses anything over 25. Slicing a finished webm does not help —
+ * only the first slice carries the container header. So the recorder rotates
+ * instead: every few minutes the MediaRecorder is stopped and a new one started
+ * on the same stream, producing a sequence of complete files, each one small
+ * enough to upload and each tagged with its offset into the session so the
+ * transcript stitches back onto a single clock.
+ */
 export class RecordingManager {
   constructor() {
     this.mediaRecorder = null;
@@ -7,22 +20,17 @@ export class RecordingManager {
     // itself is a synthetic AudioContext destination stream, not one of these.
     this.rawStreams = [];
     this.audioContext = null;
-    this.recordedChunks = [];
+    this.clips = []; // { blob, offsetMs } — one per rotation, in session order
     this.isRecording = false;
     this.isPaused = false;
     this.startTime = null;
     this.pausedAt = null; // Timestamp of the current pause, if any
     this.totalPausedMs = 0; // Accumulated paused duration across the recording
+    this.chunkMs = 0; // 0 disables rotation
+    this.clipStartedAtMs = 0; // Active-recording ms when the current clip began
+    this.rotationTimer = null;
     this.segments = []; // Track pause/resume segments
-    this.sessionMetadata = {
-      campaignName: null,
-      sceneName: null,
-      players: [],
-      gm: null,
-      startTime: null,
-      endTime: null,
-      segments: [] // { start, end, paused, duration }
-    };
+    this.sessionMetadata = emptyMetadata();
   }
 
   /** Resolves the recordingSource setting into a single MediaStream, mixing mic + system audio for 'both'. */
@@ -67,7 +75,7 @@ export class RecordingManager {
 
   async startRecording() {
     try {
-      const source = game.settings.get('echo-codex-notes', 'recordingSource');
+      const source = game.settings.get(MODULE_ID, 'recordingSource');
       this.audioStream = await this.acquireAudioStream(source);
 
       // Collect metadata about the session
@@ -79,28 +87,17 @@ export class RecordingManager {
         .map(u => u.name);
       this.sessionMetadata.startTime = new Date();
 
-      // Setup media recorder
-      const mimeType = this.getSupportedMimeType();
-      this.mediaRecorder = new MediaRecorder(this.audioStream, { mimeType });
-
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.recordedChunks.push(event.data);
-        }
-      };
-
-      this.mediaRecorder.onerror = (event) => {
-        console.error('Recording error:', event.error);
-        this.showNotification('Recording error: ' + event.error, 'error');
-        window.EchoCodexNotes.updateIndicator('error');
-      };
-
-      this.mediaRecorder.start(1000); // Collect data every second
+      this.clips = [];
+      this.chunkMs = Number(game.settings.get(MODULE_ID, 'clipMinutes') || 0) * 60_000;
       this.isRecording = true;
       this.isPaused = false;
       this.startTime = Date.now();
       this.totalPausedMs = 0;
       this.pausedAt = null;
+      this.clipStartedAtMs = 0;
+
+      this.startClipRecorder();
+      this.startRotationTimer();
 
       window.EchoCodexNotes.updateIndicator('recording');
       this.showNotification('Session recording started', 'info');
@@ -109,9 +106,69 @@ export class RecordingManager {
     } catch (error) {
       console.error('Failed to start recording:', error);
       this.showNotification('Failed to start recording: ' + error.message, 'error');
+      // A half-acquired capture still holds the mic and the tab-share banner.
+      this.releaseStreams();
+      if (this.audioContext) {
+        await this.audioContext.close().catch(() => {});
+        this.audioContext = null;
+      }
+      this.isRecording = false;
       window.EchoCodexNotes.updateIndicator('error');
       return false;
     }
+  }
+
+  /**
+   * Starts a MediaRecorder for one clip. Each gets its own chunk array and its
+   * own onstop, so a rotation in flight cannot append to the next clip.
+   */
+  startClipRecorder() {
+    const mimeType = this.getSupportedMimeType();
+    const recorder = new MediaRecorder(this.audioStream, mimeType ? { mimeType } : {});
+    const chunks = [];
+    const offsetMs = this.clipStartedAtMs;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+
+    recorder.onerror = (event) => {
+      console.error('Recording error:', event.error);
+      this.showNotification('Recording error: ' + event.error, 'error');
+      window.EchoCodexNotes.updateIndicator('error');
+    };
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+      if (blob.size > 0) this.clips.push({ blob, offsetMs });
+      recorder.onStopped?.();
+    };
+
+    recorder.start(1000); // Collect data every second
+    this.mediaRecorder = recorder;
+  }
+
+  startRotationTimer() {
+    clearInterval(this.rotationTimer);
+    if (!this.chunkMs) return;
+
+    // Driven by elapsed *active* time rather than a plain interval, so a table
+    // that pauses for a twenty-minute break does not rotate through it.
+    this.rotationTimer = setInterval(() => {
+      if (!this.isRecording || this.isPaused) return;
+      const active = this.getRecordingDuration() ?? 0;
+      if (active - this.clipStartedAtMs >= this.chunkMs) this.rotateClip();
+    }, 1000);
+  }
+
+  /** Closes the current clip and opens the next one on the same stream. */
+  rotateClip() {
+    const previous = this.mediaRecorder;
+    if (!previous || previous.state === 'inactive') return;
+
+    this.clipStartedAtMs = this.getRecordingDuration() ?? this.clipStartedAtMs;
+    previous.stop();
+    this.startClipRecorder();
   }
 
   pauseRecording() {
@@ -166,54 +223,72 @@ export class RecordingManager {
   async stopRecording() {
     if (!this.isRecording) return null;
 
+    clearInterval(this.rotationTimer);
+    this.rotationTimer = null;
+
+    try {
+      await this.closeCurrentClip();
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+    }
+
+    const clips = [...this.clips].sort((a, b) => a.offsetMs - b.offsetMs);
+    const metadata = { ...this.sessionMetadata, endTime: new Date() };
+    const segments = this.segments;
+
+    this.isRecording = false;
+    this.isPaused = false;
+    this.releaseStreams();
+    if (this.audioContext) {
+      await this.audioContext.close().catch(() => {});
+      this.audioContext = null;
+    }
+    this.clips = [];
+    this.segments = [];
+    this.mediaRecorder = null;
+    this.sessionMetadata = emptyMetadata();
+
+    if (!clips.length) {
+      this.showNotification('The recording came back empty — nothing was captured.', 'warning');
+      return null;
+    }
+
+    window.EchoCodexNotes.updateIndicator('processing');
+    this.showNotification('Recording stopped. Processing...', 'info');
+
+    return { clips, metadata, segments };
+  }
+
+  /** Resolves once the active recorder's final blob has landed in `clips`. */
+  closeCurrentClip() {
+    const recorder = this.mediaRecorder;
+    if (!recorder || recorder.state === 'inactive') return Promise.resolve();
+
     return new Promise((resolve) => {
-      this.mediaRecorder.onstop = async () => {
-        try {
-          const audioBlob = new Blob(this.recordedChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
-          const metadata = { ...this.sessionMetadata, endTime: new Date() };
-          const segments = this.segments;
-          this.isRecording = false;
-          this.isPaused = false;
-
-          // Stop every underlying track (mic + display, whether or not they
-          // were mixed) so the browser's recording/sharing indicators clear.
-          this.audioStream.getTracks().forEach(track => track.stop());
-          this.rawStreams.forEach(stream => stream.getTracks().forEach(track => track.stop()));
-          if (this.audioContext) {
-            await this.audioContext.close();
-            this.audioContext = null;
-          }
-          this.rawStreams = [];
-          this.recordedChunks = [];
-          this.segments = [];
-          this.sessionMetadata = {
-            campaignName: null,
-            sceneName: null,
-            players: [],
-            gm: null,
-            startTime: null,
-            endTime: null,
-            segments: []
-          };
-
-          window.EchoCodexNotes.updateIndicator('processing');
-          this.showNotification('Recording stopped. Processing...', 'info');
-
-          resolve({ audioBlob, metadata, segments });
-        } catch (error) {
-          console.error('Error stopping recording:', error);
-          resolve(null);
-        }
+      // A recorder that never fires onstop would hang the whole pipeline and
+      // strand the audio; after two seconds take what has already landed.
+      const timer = setTimeout(resolve, 2000);
+      recorder.onStopped = () => {
+        clearTimeout(timer);
+        resolve();
       };
-
-      this.mediaRecorder.stop();
+      recorder.stop();
     });
+  }
+
+  /** Stops every underlying track so the browser's recording indicators clear. */
+  releaseStreams() {
+    this.audioStream?.getTracks().forEach(track => track.stop());
+    this.rawStreams.forEach(stream => stream.getTracks().forEach(track => track.stop()));
+    this.rawStreams = [];
+    this.audioStream = null;
   }
 
   getSupportedMimeType() {
     const types = [
-      'audio/webm',
       'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
       'audio/ogg',
       'audio/mp4'
     ];
@@ -249,4 +324,16 @@ export class RecordingManager {
     }
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
   }
+}
+
+function emptyMetadata() {
+  return {
+    campaignName: null,
+    sceneName: null,
+    players: [],
+    gm: null,
+    startTime: null,
+    endTime: null,
+    segments: []
+  };
 }

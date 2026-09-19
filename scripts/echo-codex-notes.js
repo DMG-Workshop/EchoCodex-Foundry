@@ -1,7 +1,9 @@
 import { RecordingManager } from './RecordingManager.js';
-import { CurationUI } from './CurationUI.js';
+import { CurationUI, SOCKET } from './CurationUI.js';
 import { flattenDocument } from './curationModel.js';
 import { transcribe, structure } from './providers.js';
+import { escapeHtml } from './html.js';
+import { extensionFor } from './transcript.js';
 
 const MODULE_ID = 'echo-codex-notes';
 
@@ -37,6 +39,17 @@ class EchoCodexNotes {
         both: 'Microphone and system audio'
       },
       default: 'microphone'
+    });
+
+    register('clipMinutes', {
+      name: 'Clip length (minutes)',
+      hint: 'Audio is recorded in clips of this length so no single upload exceeds the 25 MB transcription limit. '
+        + 'Raise it only for a local endpoint without that limit; 0 records the whole session as one file.',
+      scope: 'client',
+      config: true,
+      type: Number,
+      range: { min: 0, max: 60, step: 5 },
+      default: 10
     });
 
     // --- Stage 1: speech to text -------------------------------------
@@ -85,7 +98,11 @@ class EchoCodexNotes {
       scope: 'client',
       config: true,
       type: String,
-      choices: { anthropic: 'Claude', openai: 'OpenAI-compatible (incl. Ollama, LM Studio)' },
+      choices: {
+        anthropic: 'Claude',
+        openai: 'OpenAI-compatible (incl. Ollama, LM Studio)',
+        gemini: 'Gemini'
+      },
       default: 'anthropic'
     });
 
@@ -155,7 +172,7 @@ class EchoCodexNotes {
     if (indicator) {
       const text = indicator.querySelector('.status-text');
       indicator.className = `echo-codex-indicator status-${status}`;
-      text.textContent = {
+      if (text) text.textContent = {
         ready: 'Echo Codex',
         recording: 'Recording',
         paused: 'Paused',
@@ -210,7 +227,7 @@ class EchoCodexNotes {
     };
 
     try {
-      const segments = await transcribe(result.audioBlob, { onProgress: notify });
+      const segments = await transcribe(result.clips, { onProgress: notify });
       const transcriptText = segments.map(s => s.text).join(' ').trim();
       if (!transcriptText) throw new Error('The transcript came back empty.');
 
@@ -227,7 +244,7 @@ class EchoCodexNotes {
       ui.notifications.error(`Echo Codex: ${error.message}`);
       this.updateIndicator('error');
       // The recording is gone once we return, so hand it back rather than drop it.
-      this.offerAudioDownload(result.audioBlob);
+      this.offerAudioDownload(result.clips);
     }
   }
 
@@ -235,14 +252,25 @@ class EchoCodexNotes {
    * A failed upload after a four-hour session must not lose the audio — save it
    * so the GM can retry, or transcribe it in the phone app instead.
    */
-  static offerAudioDownload(audioBlob) {
-    const url = URL.createObjectURL(audioBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `echo-codex-session-${Date.now()}.webm`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    ui.notifications.warn('The recording was saved to your downloads so it is not lost.');
+  static offerAudioDownload(clips) {
+    if (!clips?.length) return;
+    const stamp = Date.now();
+
+    clips.forEach((clip, index) => {
+      const url = URL.createObjectURL(clip.blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const part = clips.length > 1 ? `-part${String(index + 1).padStart(2, '0')}` : '';
+      link.download = `echo-codex-session-${stamp}${part}.${extensionFor(clip.blob)}`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    });
+
+    ui.notifications.warn(
+      clips.length > 1
+        ? `The recording was saved to your downloads as ${clips.length} clips so it is not lost.`
+        : 'The recording was saved to your downloads so it is not lost.'
+    );
   }
 
   static openCuration() {
@@ -328,16 +356,11 @@ async function importEchoCodexNote(raw) {
   } catch (error) {
     console.error(`${MODULE_ID} | Import failed`, error);
     ui.notifications.error("Echo Codex import failed. Check the JSON export format.");
+  } finally {
+    // A whole session export parked in a world setting is synced to every
+    // client on every load; clear it once it has become a journal.
+    if (game.user.isGM) await game.settings.set(MODULE_ID, "importNote", "");
   }
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
 
 Hooks.once("init", () => {
@@ -348,6 +371,9 @@ Hooks.once("init", () => {
 Hooks.once("ready", () => {
   EchoCodexNotes.createIndicator();
   EchoCodexNotes.updateIndicator('ready');
+  // One listener for the lifetime of the client: curation outlives its window,
+  // so answering players cannot depend on a dialog being open.
+  game.socket.on(SOCKET, (payload) => CurationUI.handleSocket(payload));
 });
 
 window.EchoCodexNotes = EchoCodexNotes;

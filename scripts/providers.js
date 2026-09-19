@@ -1,29 +1,22 @@
 import { NOTE_DOCUMENT_SCHEMA } from './noteDocumentSchema.js';
+import { inlineRefs, toGeminiSchema } from './schemaTools.js';
+import {
+  extensionFor,
+  offsetSegments,
+  parseNoteDocument,
+  renderTranscript
+} from './transcript.js';
 
 const MODULE_ID = 'echo-codex-notes';
 
 const setting = (key) => game.settings.get(MODULE_ID, key);
 const trimUrl = (url) => String(url || '').replace(/\/+$/, '');
 
-/** Resolves $ref/$defs into a self-contained schema — provider strict modes vary in $ref support. */
-function inlineRefs(node, defs) {
-  if (Array.isArray(node)) return node.map(n => inlineRefs(n, defs));
-  if (!node || typeof node !== 'object') return node;
-
-  if (typeof node.$ref === 'string') {
-    const name = node.$ref.replace('#/$defs/', '');
-    return inlineRefs(defs[name], defs);
-  }
-
-  const out = {};
-  for (const [key, value] of Object.entries(node)) {
-    if (key === '$defs') continue;
-    out[key] = inlineRefs(value, defs);
-  }
-  return out;
-}
-
 const FLAT_SCHEMA = inlineRefs(NOTE_DOCUMENT_SCHEMA, NOTE_DOCUMENT_SCHEMA.$defs || {});
+const GEMINI_SCHEMA = toGeminiSchema(FLAT_SCHEMA);
+
+/** api.openai.com caps uploads at 25 MB; local servers generally do not. */
+export const OPENAI_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024;
 
 async function readError(response) {
   try {
@@ -39,16 +32,54 @@ async function readError(response) {
  * ------------------------------------------------------------------ */
 
 /**
- * Audio -> transcript segments. The OpenAI path is also the local path: any
- * OpenAI-compatible server (whisper.cpp's server, LM Studio) works by pointing
- * the base URL at it, which is how a table records without a cloud key.
+ * Audio clips -> transcript segments on one continuous timeline.
+ *
+ * A session arrives as a list of `{ blob, offsetMs }` clips rather than one
+ * file: the recorder rotates every few minutes so no single upload approaches
+ * the 25 MB limit, and each clip's segments are shifted back onto the session
+ * clock here. The OpenAI path is also the local path — any OpenAI-compatible
+ * server (whisper.cpp's server, LM Studio) works by pointing the base URL at
+ * it, which is how a table records without a cloud key.
  */
-export async function transcribe(audioBlob, { onProgress } = {}) {
+export async function transcribe(clips, { onProgress } = {}) {
   const provider = setting('sttProvider');
-  onProgress?.('Transcribing audio…');
+  const list = normalizeClips(clips);
+  const segments = [];
 
-  if (provider === 'gemini') return transcribeGemini(audioBlob);
-  return transcribeOpenAiCompatible(audioBlob);
+  for (const [index, clip] of list.entries()) {
+    onProgress?.(list.length > 1
+      ? `Transcribing part ${index + 1} of ${list.length}…`
+      : 'Transcribing audio…');
+
+    const transcribeClip = () => (provider === 'gemini'
+      ? transcribeGemini(clip.blob)
+      : transcribeOpenAiCompatible(clip.blob));
+
+    // A long session is twenty-odd sequential uploads; one blip on clip seven
+    // should not cost the other nineteen. A second failure is real and stops
+    // the run, which still hands the GM every clip to retry by hand.
+    let part;
+    try {
+      part = await transcribeClip();
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Clip ${index + 1} failed, retrying once`, error);
+      onProgress?.(`Retrying part ${index + 1} of ${list.length}…`);
+      try {
+        part = await transcribeClip();
+      } catch (retryError) {
+        throw new Error(`Part ${index + 1} of ${list.length} failed: ${retryError.message}`);
+      }
+    }
+
+    segments.push(...offsetSegments(part, clip.offsetMs ?? 0));
+  }
+
+  return segments;
+}
+
+function normalizeClips(clips) {
+  const list = Array.isArray(clips) ? clips : [{ blob: clips, offsetMs: 0 }];
+  return list.filter(clip => clip?.blob && clip.blob.size > 0);
 }
 
 async function transcribeOpenAiCompatible(audioBlob) {
@@ -56,11 +87,12 @@ async function transcribeOpenAiCompatible(audioBlob) {
   const apiKey = setting('sttApiKey');
   const model = setting('sttModel') || 'whisper-1';
 
-  const maxBytes = 25 * 1024 * 1024;
-  if (audioBlob.size > maxBytes) {
+  // Clip rotation keeps uploads under this, but a GM who set the clip length
+  // very high deserves the specific error rather than a 413 from the provider.
+  if (audioBlob.size > OPENAI_UPLOAD_LIMIT_BYTES) {
     throw new Error(
-      `Recording is ${(audioBlob.size / 1048576).toFixed(1)} MB; the transcription limit is 25 MB. ` +
-      `Record shorter sessions, or point the base URL at a local server without that limit.`
+      `A recording clip is ${(audioBlob.size / 1048576).toFixed(1)} MB; the transcription limit is 25 MB. ` +
+      `Lower "Clip length" in the module settings, or point the base URL at a local server without that limit.`
     );
   }
 
@@ -132,9 +164,10 @@ export async function structure(segments, context, { onProgress } = {}) {
   const system = buildSystemPrompt(context);
   const user = `<transcript>\n${transcript}\n</transcript>`;
 
-  const raw = provider === 'anthropic'
-    ? await structureAnthropic(system, user)
-    : await structureOpenAiCompatible(system, user);
+  let raw;
+  if (provider === 'anthropic') raw = await structureAnthropic(system, user);
+  else if (provider === 'gemini') raw = await structureGemini(system, user);
+  else raw = await structureOpenAiCompatible(system, user);
 
   return parseNoteDocument(raw);
 }
@@ -168,6 +201,11 @@ async function structureAnthropic(system, user) {
   if (data.stop_reason === 'refusal') {
     throw new Error('The model declined to structure this recording.');
   }
+  // A truncated response is still valid HTTP; it only fails at JSON.parse, by
+  // which point the cause is unrecoverable from the error.
+  if (data.stop_reason === 'max_tokens') {
+    throw new Error('The notes were cut off at the model\'s output limit. Record shorter sessions.');
+  }
   return data.content?.find(b => b.type === 'text')?.text ?? '';
 }
 
@@ -198,39 +236,45 @@ async function structureOpenAiCompatible(system, user) {
   if (!response.ok) throw new Error(`Structuring failed (${response.status}): ${await readError(response)}`);
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? '';
-}
-
-function parseNoteDocument(raw) {
-  const text = String(raw || '').trim();
-  // Local models ignore response_format often enough to be worth unwrapping fences.
-  const unfenced = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  let parsed;
-  try {
-    parsed = JSON.parse(unfenced);
-  } catch {
-    throw new Error('The model did not return valid JSON. Try a model with structured-output support.');
+  const choice = data.choices?.[0];
+  if (choice?.finish_reason === 'length') {
+    throw new Error('The notes were cut off at the model\'s output limit. Record shorter sessions.');
   }
-  if (!parsed || typeof parsed !== 'object' || !parsed.meta) {
-    throw new Error('The model returned JSON that is not a NoteDocument.');
+  return choice?.message?.content ?? '';
+}
+
+async function structureGemini(system, user) {
+  const apiKey = setting('structureApiKey');
+  if (!apiKey) throw new Error('Gemini structuring needs an API key.');
+  const model = setting('structureModel') || 'gemini-2.5-pro';
+  const base = trimUrl(setting('structureBaseUrl')) || 'https://generativelanguage.googleapis.com';
+
+  const response = await fetch(
+    `${base}/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: user }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: GEMINI_SCHEMA,
+          maxOutputTokens: 16000
+        }
+      })
+    }
+  );
+  if (!response.ok) throw new Error(`Structuring failed (${response.status}): ${await readError(response)}`);
+
+  const data = await response.json();
+  const candidate = data?.candidates?.[0];
+  // MAX_TOKENS here means a truncated JSON object, which parses as a syntax
+  // error three steps later; name the real cause instead.
+  if (candidate?.finishReason && !['STOP', 'MAX_TOKENS'].includes(candidate.finishReason)) {
+    throw new Error(`The model stopped early (${candidate.finishReason}).`);
   }
-  return parsed;
-}
-
-function renderTranscript(segments) {
-  return segments.map(s => {
-    if (s.startMs == null) return s.text.trim();
-    return `[${formatTimestamp(s.startMs)}] ${s.text.trim()}`;
-  }).join('\n');
-}
-
-function formatTimestamp(ms) {
-  const total = Math.floor(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (n) => String(n).padStart(2, '0');
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  return candidate?.content?.parts?.map(p => p.text).join('') ?? '';
 }
 
 /**
@@ -293,14 +337,6 @@ The same commitment restated three times is one task. Merge, and cite the cleare
 
 STUDY AIDS
 Return null for keyConcepts, flashcards and quiz — they are not used here.`;
-}
-
-function extensionFor(blob) {
-  const type = blob.type || '';
-  if (type.includes('ogg')) return 'ogg';
-  if (type.includes('mp4')) return 'mp4';
-  if (type.includes('wav')) return 'wav';
-  return 'webm';
 }
 
 function toBase64(blob) {

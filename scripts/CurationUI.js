@@ -1,27 +1,29 @@
-import { groupRows, tally, formatRow } from './curationModel.js';
+import { groupRows, tally, formatRow, redactForPlayers, canMerge } from './curationModel.js';
 import { exportToJournals } from './JournalExporter.js';
 
 const MODULE_ID = 'echo-codex-notes';
-const SOCKET = `module.${MODULE_ID}`;
+export const SOCKET = `module.${MODULE_ID}`;
 
 /**
  * Session note curation.
  *
- * The GM's open dialog is the single source of truth for the working row list.
- * Players get a read-mostly copy that can vote; votes travel to the GM over a
- * socket, the GM applies them, and the result is rebroadcast to every open
- * dialog. Foundry only lets a GM write world settings, so routing every change
- * through one authority avoids fighting over permissions and keeps exactly one
- * place deciding what actually ships to the journal.
+ * The GM's row list is the single source of truth. Players get a redacted copy
+ * that can vote; votes travel to the GM over a socket, the GM applies them, and
+ * the result is rebroadcast to every open dialog. Foundry only lets a GM write
+ * world settings, so routing every change through one authority avoids fighting
+ * over permissions and keeps exactly one place deciding what ships to the journal.
  */
 export class CurationUI extends Application {
+  /** Open player-side dialogs, so incoming state can reach them all. */
+  static followers = new Set();
+
   constructor(options = {}) {
     super(options);
     this.doc = null;
     this.meta = null;
+    this.summary = null;
     this.rows = [];
     this.mergeSelection = new Set();
-    this._socketHandler = null;
   }
 
   static get defaultOptions() {
@@ -41,8 +43,8 @@ export class CurationUI extends Application {
     const app = new CurationUI();
     app.doc = doc;
     app.meta = meta;
+    app.summary = doc?.meta?.summary ?? null;
     app.rows = rows;
-    app.bindSocket();
     app.render(true);
     // Nothing else holds this instance; without a handle an accidental close
     // would lose curation that has not been exported yet.
@@ -53,36 +55,47 @@ export class CurationUI extends Application {
   /** Player entry point: opens empty and asks the GM for the current state. */
   static openFollower() {
     const app = new CurationUI();
-    app.bindSocket();
+    CurationUI.followers.add(app);
     app.render(true);
     game.socket.emit(SOCKET, { type: 'requestState' });
     return app;
   }
 
-  bindSocket() {
-    if (this._socketHandler) return;
+  /**
+   * Single module-level socket entry point, registered once at `ready`.
+   *
+   * Binding per dialog instead would mean a GM who closed the window stopped
+   * answering players — but the curation itself outlives the window, so the
+   * listener has to as well.
+   */
+  static handleSocket(payload) {
+    if (!payload) return;
 
-    this._socketHandler = (payload) => {
-      if (!payload) return;
+    if (game.user.isGM) {
+      // With two GMs connected, both would answer and the second would clobber
+      // the first; only the primary speaks for the table.
+      if (!isPrimaryGM()) return;
+      const app = window.EchoCodexNotes?.activeCuration;
+      if (!app) return;
+      if (payload.type === 'vote') app.applyVote(payload.rowId, payload.userId, payload.vote);
+      if (payload.type === 'requestState') app.broadcastState();
+      return;
+    }
 
-      if (game.user.isGM) {
-        if (payload.type === 'vote') this.applyVote(payload.rowId, payload.userId, payload.vote);
-        if (payload.type === 'requestState') this.broadcastState();
-      } else if (payload.type === 'state') {
-        this.meta = payload.meta;
-        this.rows = payload.rows;
-        this.render(false);
-      }
-    };
-    game.socket.on(SOCKET, this._socketHandler);
+    if (payload.type === 'state') {
+      for (const app of CurationUI.followers) app.receiveState(payload);
+    }
   }
 
-  /** Instances are per-open; unbind so a closed dialog stops reacting to traffic. */
+  receiveState({ meta, rows, summary }) {
+    this.meta = meta;
+    this.rows = rows ?? [];
+    this.summary = summary ?? null;
+    this.render(false);
+  }
+
   async close(options) {
-    if (this._socketHandler) {
-      game.socket.off(SOCKET, this._socketHandler);
-      this._socketHandler = null;
-    }
+    CurationUI.followers.delete(this);
     return super.close(options);
   }
 
@@ -97,7 +110,12 @@ export class CurationUI extends Application {
   }
 
   broadcastState() {
-    game.socket.emit(SOCKET, { type: 'state', meta: this.meta, rows: this.rows });
+    game.socket.emit(SOCKET, {
+      type: 'state',
+      meta: this.meta,
+      summary: this.summary,
+      rows: redactForPlayers(this.rows)
+    });
   }
 
   getData() {
@@ -105,7 +123,8 @@ export class CurationUI extends Application {
     const enableVoting = game.settings.get(MODULE_ID, 'enablePlayerVoting');
     const separateGMNotes = game.settings.get(MODULE_ID, 'separateGMNotes');
 
-    // A GM-only row is exactly the thing players must not see while voting.
+    // Redundant on the player side — GM-only rows never reach them — but it
+    // keeps the GM's own view honest if a redaction ever regresses.
     const visible = this.rows.filter(row => isGM || !row.gmOnly);
 
     const groups = groupRows(visible).map(group => ({
@@ -127,7 +146,7 @@ export class CurationUI extends Application {
       enableVoting,
       separateGMNotes,
       meta: this.meta,
-      summary: this.doc?.meta?.summary ?? null,
+      summary: this.summary,
       groups,
       hasRows: visible.length > 0,
       includedCount: this.rows.filter(r => r.included).length,
@@ -191,17 +210,28 @@ export class CurationUI extends Application {
 
   mergeSelected() {
     if (!game.user.isGM) return;
-    if (this.mergeSelection.size < 2) {
+
+    const selected = this.rows.filter(r => this.mergeSelection.has(r.id));
+    if (selected.length < 2) {
       ui.notifications.warn('Select at least two items to merge.');
       return;
     }
+    if (!canMerge(selected)) {
+      ui.notifications.warn('Only items of the same kind can be merged.');
+      return;
+    }
 
-    const selected = this.rows.filter(r => this.mergeSelection.has(r.id));
     const [first, ...rest] = selected;
     first.text = selected.map(r => r.text).join(' ');
     first.edited = true;
+    first.included = true;
+    // A merged row is a new claim; old votes were cast on the old wording.
     first.votes = {};
-    this.rows = this.rows.filter(r => !rest.includes(r));
+    // GM-only is a floor, not a majority: merging in one hidden row hides the result.
+    first.gmOnly = selected.some(r => r.gmOnly);
+
+    const dropped = new Set(rest.map(r => r.id));
+    this.rows = this.rows.filter(r => !dropped.has(r.id));
 
     this.mergeSelection.clear();
     this.syncAsGM();
@@ -223,7 +253,8 @@ export class CurationUI extends Application {
     }
 
     const gmOnly = included.filter(r => r.gmOnly).length;
-    const content = await renderTemplate(`modules/${MODULE_ID}/templates/export-dialog.html`, {
+    const render = foundry.applications?.handlebars?.renderTemplate ?? renderTemplate;
+    const content = await render(`modules/${MODULE_ID}/templates/export-dialog.html`, {
       meta: this.meta,
       totalCount: included.length,
       gmOnlyCount: gmOnly,
@@ -238,8 +269,22 @@ export class CurationUI extends Application {
     });
     if (!confirmed) return;
 
-    await exportToJournals({ doc: this.doc, meta: this.meta, rows: included });
-    ui.notifications.info('Session notes exported.');
-    window.EchoCodexNotes?.updateIndicator('ready');
+    try {
+      await exportToJournals({ doc: this.doc, meta: this.meta, rows: included });
+      ui.notifications.info('Session notes exported.');
+      window.EchoCodexNotes?.updateIndicator('ready');
+    } catch (error) {
+      console.error(`${MODULE_ID} | Export failed`, error);
+      // Curation survives so the GM can retry rather than redo the whole pass.
+      ui.notifications.error(`Echo Codex: export failed — ${error.message}`);
+    }
   }
+}
+
+/** v13 exposes `game.users.activeGM`; older cores need the manual scan. */
+function isPrimaryGM() {
+  const active = game.users.activeGM;
+  if (active) return active.id === game.user.id;
+  const first = game.users.filter(u => u.isGM && u.active).sort((a, b) => a.id.localeCompare(b.id))[0];
+  return first?.id === game.user.id;
 }
