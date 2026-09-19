@@ -1,10 +1,21 @@
 name: Release
 
-# Publishes the artifacts module.json already points at: pushing a v* tag
-# produces the zip Foundry downloads and the manifest it reads to find it.
+# Publishes the artifacts module.json already points at: the zip Foundry
+# downloads and the manifest it reads to find it.
+#
+# Two ways in. Pushing a v* tag is the usual one. "Run workflow" from the
+# Actions tab is the other, for when tags cannot be pushed from where the
+# release is being cut — it takes the version as an input and creates the tag
+# itself, so the result is identical either way.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (for example 0.3.0). Must match the version in module.json.'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -24,25 +35,64 @@ jobs:
 
       - name: Resolve version
         id: version
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Check the tag matches the manifest version
+        env:
+          # Through the environment rather than inline ${{ }}: the input is
+          # operator-supplied text, and interpolating it into the script would
+          # let a crafted version string run as shell.
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            value="${INPUT_VERSION#v}"
+          else
+            value="${GITHUB_REF_NAME#v}"
+          fi
+
+          if ! printf '%s' "$value" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "Version '$value' is not a valid semantic version" >&2
+            exit 1
+          fi
+
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+          echo "tag=v$value" >> "$GITHUB_OUTPUT"
+
+      - name: Check the version matches the manifest
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
           manifest=$(node -p "require('./module.json').version")
-          if [ "$manifest" != "${{ steps.version.outputs.value }}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match module.json version $manifest" >&2
+          if [ "$manifest" != "$VERSION" ]; then
+            echo "Release version $VERSION does not match module.json version $manifest" >&2
+            echo "Bump module.json (and package.json) before releasing." >&2
+            exit 1
+          fi
+
+      # A dispatch creates the tag, so an existing one means this version was
+      # already cut; overwriting it would swap the files under anyone who
+      # installed it.
+      - name: Check the tag is not already taken
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists. Delete it first to re-cut this release." >&2
             exit 1
           fi
 
       # `manifest` stays on the latest URL so Foundry can detect updates;
       # `download` is pinned to this tag so an install gets these exact files.
       - name: Pin the download URL to this release
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           node -e '
             const fs = require("fs");
             const m = JSON.parse(fs.readFileSync("module.json", "utf8"));
             const repo = process.env.GITHUB_REPOSITORY;
-            const tag = process.env.GITHUB_REF_NAME;
+            const tag = process.env.TAG;
             m.manifest = `https://github.com/${repo}/releases/latest/download/module.json`;
             m.download = `https://github.com/${repo}/releases/download/${tag}/echo-codex-notes.zip`;
             fs.writeFileSync("module.json", JSON.stringify(m, null, 2) + "\n");
@@ -54,7 +104,11 @@ jobs:
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          name: v${{ steps.version.outputs.value }}
+          # Creates the tag at this commit when the run was dispatched rather
+          # than triggered by a tag push.
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             module.json
             echo-codex-notes.zip
