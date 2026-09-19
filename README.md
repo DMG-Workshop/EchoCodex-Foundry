@@ -153,6 +153,15 @@ each as its own row:
 - Each row shows the verbatim transcript quote it came from, so you can tell a
   real beat from a mishearing.
 
+Curation autosaves as you work, so a closed tab or a crashed browser no longer
+costs a pass over a four-hour session — the GM is offered the unfinished list
+again on next load. **Undo** steps back through merges and bulk changes.
+
+For a long session there is a filter box, per-group check-all/none, and
+**Uncheck voted-down**, which acts on rows the table clearly voted against (at
+least two votes, more drops than keeps). It is still only a shortcut: the rows
+are unchecked, not deleted, and the GM decides.
+
 Players can open the same list and vote Keep/Drop on each row. Votes are
 advisory — they sync to the GM, who decides what actually ships.
 

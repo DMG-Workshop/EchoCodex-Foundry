@@ -1,4 +1,6 @@
-import { groupRows, tally, formatRow, redactForPlayers, canMerge } from './curationModel.js';
+import {
+  groupRows, tally, formatRow, redactForPlayers, canMerge, votedDown, filterRows, snapshot
+} from './curationModel.js';
 import { exportToJournals } from './JournalExporter.js';
 
 const MODULE_ID = 'echo-codex-notes';
@@ -24,6 +26,10 @@ export class CurationUI extends Application {
     this.summary = null;
     this.rows = [];
     this.mergeSelection = new Set();
+    this.filter = '';
+    // Merging is destructive and irreversible without this; a mis-click during
+    // a long pass should cost a click, not the work.
+    this.undoStack = [];
   }
 
   static get defaultOptions() {
@@ -136,7 +142,7 @@ export class CurationUI extends Application {
 
     // Redundant on the player side — GM-only rows never reach them — but it
     // keeps the GM's own view honest if a redaction ever regresses.
-    const visible = this.rows.filter(row => isGM || !row.gmOnly);
+    const visible = filterRows(this.rows.filter(row => isGM || !row.gmOnly), this.filter);
 
     const groups = groupRows(visible).map(group => ({
       ...group,
@@ -161,7 +167,12 @@ export class CurationUI extends Application {
       groups,
       hasRows: visible.length > 0,
       includedCount: this.rows.filter(r => r.included).length,
-      mergeCount: this.mergeSelection.size
+      mergeCount: this.mergeSelection.size,
+      filter: this.filter,
+      filtered: visible.length !== this.rows.length,
+      totalCount: this.rows.length,
+      canUndo: this.undoStack.length > 0,
+      votedDownCount: votedDown(this.rows).length
     };
   }
 
@@ -198,10 +209,50 @@ export class CurationUI extends Application {
     });
 
     html.find('.merge-selected').on('click', () => this.mergeSelected());
+    html.find('.undo-curation').on('click', () => this.undo());
+    html.find('.bulk-include').on('click', (event) => this.bulkInclude(event, true));
+    html.find('.bulk-exclude').on('click', (event) => this.bulkInclude(event, false));
+    html.find('.drop-voted-down').on('click', () => this.dropVotedDown());
+    html.find('.row-filter').on('input', (event) => {
+      this.filter = event.currentTarget.value;
+      this.render(false);
+      // Re-rendering steals focus from the box being typed into.
+      setTimeout(() => {
+        const box = this.element?.find?.('.row-filter')?.[0];
+        if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+      }, 0);
+    });
     html.find('.vote-keep').on('click', (event) => this.vote(event, 'keep'));
     html.find('.vote-drop').on('click', (event) => this.vote(event, 'drop'));
     html.find('.vote-clear').on('click', (event) => this.vote(event, null));
     html.find('.export-notes').on('click', () => this.runExport());
+  }
+
+  /** Check or uncheck a whole group at once; a long session has a lot of rows. */
+  bulkInclude(event, included) {
+    if (!game.user.isGM) return;
+    const key = event.currentTarget.dataset.groupKey;
+    const group = groupRows(this.rows).find(g => g.key === key);
+    if (!group) return;
+
+    this.pushUndo();
+    for (const row of group.rows) row.included = included;
+    this.syncAsGM();
+  }
+
+  /** Acts on the table's votes in one go — still the GM's decision to make. */
+  dropVotedDown() {
+    if (!game.user.isGM) return;
+    const candidates = votedDown(this.rows);
+    if (!candidates.length) {
+      ui.notifications.info('Nothing has been clearly voted down.');
+      return;
+    }
+
+    this.pushUndo();
+    for (const row of candidates) row.included = false;
+    this.syncAsGM();
+    ui.notifications.info(`Unchecked ${candidates.length} item(s) the table voted down.`);
   }
 
   findRow(event) {
@@ -219,6 +270,25 @@ export class CurationUI extends Application {
     }
   }
 
+  /** Takes a restore point before anything destructive. */
+  pushUndo() {
+    this.undoStack.push(snapshot(this.rows));
+    if (this.undoStack.length > 20) this.undoStack.shift();
+  }
+
+  undo() {
+    if (!game.user.isGM) return;
+    const previous = this.undoStack.pop();
+    if (!previous) {
+      ui.notifications.info('Nothing to undo.');
+      return;
+    }
+    this.rows = previous;
+    this.mergeSelection.clear();
+    this.syncAsGM();
+    this.save();
+  }
+
   mergeSelected() {
     if (!game.user.isGM) return;
 
@@ -231,6 +301,8 @@ export class CurationUI extends Application {
       ui.notifications.warn('Only items of the same kind can be merged.');
       return;
     }
+
+    this.pushUndo();
 
     const [first, ...rest] = selected;
     first.text = selected.map(r => r.text).join(' ');
@@ -252,6 +324,43 @@ export class CurationUI extends Application {
     if (!game.user.isGM) return;
     this.broadcastState();
     this.render(false);
+    this.save();
+  }
+
+  /**
+   * Curation outlives the window but not, until now, the tab. A session's worth
+   * of judgement should not depend on nobody hitting refresh.
+   */
+  save() {
+    if (!game.user.isGM) return;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      game.settings.set(MODULE_ID, 'curationDraft', {
+        savedAt: Date.now(),
+        meta: this.meta,
+        summary: this.summary,
+        doc: this.doc,
+        rows: this.rows
+      }).catch(error => console.warn(`${MODULE_ID} | Could not save curation`, error));
+    }, 750);
+  }
+
+  static async restoreDraft() {
+    const draft = game.settings.get(MODULE_ID, 'curationDraft');
+    if (!draft?.rows?.length) return null;
+
+    const app = new CurationUI();
+    app.doc = draft.doc ?? null;
+    app.meta = draft.meta ?? null;
+    app.summary = draft.summary ?? null;
+    app.rows = draft.rows;
+    app.render(true);
+    if (window.EchoCodexNotes) window.EchoCodexNotes.activeCuration = app;
+    return app;
+  }
+
+  static async clearDraft() {
+    if (game.user.isGM) await game.settings.set(MODULE_ID, 'curationDraft', {});
   }
 
   async runExport() {
@@ -282,6 +391,7 @@ export class CurationUI extends Application {
 
     try {
       await exportToJournals({ doc: this.doc, meta: this.meta, rows: included });
+      await CurationUI.clearDraft();
       ui.notifications.info('Session notes exported.');
       window.EchoCodexNotes?.updateIndicator('ready');
     } catch (error) {

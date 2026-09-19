@@ -65,6 +65,14 @@ class EchoCodexNotes {
       default: 10
     });
 
+    register('curationDraft', {
+      name: 'Curation in progress',
+      scope: 'world',
+      config: false,
+      type: Object,
+      default: {}
+    });
+
     register('requireConsent', {
       name: 'Ask players before recording',
       hint: 'Show each player a one-time notice that sessions may be recorded, and let them '
@@ -687,6 +695,18 @@ class EchoCodexNotes {
     ui.notifications.info(`Echo Codex: discarded ${removed} stored clips.`);
   }
 
+  /** Picks curation back up where a closed tab left it. */
+  static async restoreCurationDraft() {
+    try {
+      const draft = game.settings.get(MODULE_ID, 'curationDraft');
+      if (!draft?.rows?.length) return;
+      await CurationUI.restoreDraft();
+      ui.notifications.info('Echo Codex: restored session notes you had not exported yet.');
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Could not restore curation`, error);
+    }
+  }
+
   static openCuration() {
     if (game.user.isGM) {
       if (this.activeCuration) {
@@ -848,6 +868,7 @@ Hooks.once("ready", () => {
   if (game.user.isGM) {
     EchoCodexNotes.pruneStoredAudio();
     EchoCodexNotes.announceRecoverableSessions();
+    EchoCodexNotes.restoreCurationDraft();
   } else {
     EchoCodexNotes.promptForConsent();
   }

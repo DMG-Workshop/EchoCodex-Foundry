@@ -90,7 +90,7 @@ test('init registers every setting the pipeline reads', () => {
     'importNote', 'recordingSource', 'clipMinutes', 'transcribeDuringSession',
     'sttProvider', 'sttBaseUrl', 'sttApiKey', 'sttModel', 'sttLanguage',
     'structureProvider', 'structureBaseUrl', 'structureApiKey', 'structureModel',
-    'glossary', 'requireConsent', 'consentAnswers', 'retentionDays',
+    'glossary', 'curationDraft', 'requireConsent', 'consentAnswers', 'retentionDays',
     'useSessionLog', 'useCampaignHistory',
     'enablePlayerVoting', 'handoutOwnership', 'separateGMNotes'
   ];
