@@ -16,6 +16,33 @@ test('every file the manifest declares exists', () => {
   }
 });
 
+test('the release workflow packages every path the manifest declares', () => {
+  // v0.4.0 shipped a zip with no lang/en.json, because the workflow listed the
+  // directories by hand and module.json had grown one it did not know about.
+  // The workflow derives the list now; this asserts it stays derived.
+  const workflow = readFileSync(resolve(root, '.github/workflows/release.yml'), 'utf8');
+  assert.ok(
+    !/zip -r echo-codex-notes\.zip [\w. ]+$/m.test(workflow),
+    'the package list must be derived from module.json, not hand-written'
+  );
+  assert.match(workflow, /languages/, 'the derivation must cover declared language files');
+  assert.match(workflow, /missing from the zip/, 'the workflow must fail when a declared file is unpackaged');
+});
+
+test('every declared path sits under a directory the package step can reach', () => {
+  const declared = [
+    ...(manifest.esmodules ?? []),
+    ...(manifest.styles ?? []),
+    ...(manifest.templates ?? []),
+    ...(manifest.languages ?? []).map(l => l.path)
+  ];
+  assert.ok(declared.length > 0);
+  for (const path of declared) {
+    assert.ok(!path.startsWith('/') && !path.includes('..'), `unsafe declared path: ${path}`);
+    assert.ok(existsSync(resolve(root, path)), `declared but absent: ${path}`);
+  }
+});
+
 test('the manifest version matches package.json', () => {
   assert.equal(manifest.version, read('package.json').version);
 });
