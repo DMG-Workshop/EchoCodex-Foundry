@@ -1,4 +1,5 @@
 import { groupRows, formatRow, GROUPS } from './curationModel.js';
+import { escapeHtml } from './html.js';
 
 const MODULE_ID = 'echo-codex-notes';
 
@@ -40,7 +41,13 @@ async function getOrCreateFolder(campaignName) {
   const name = `Echo Codex — ${campaignName}`;
   const existing = game.folders.find(f => f.type === 'JournalEntry' && f.name === name);
   if (existing) return existing;
-  return Folder.create({ name, type: 'JournalEntry' });
+  try {
+    return await Folder.create({ name, type: 'JournalEntry' });
+  } catch (error) {
+    // Filing is a convenience; losing it is not a reason to lose the notes.
+    console.warn(`${MODULE_ID} | Could not create the journal folder`, error);
+    return null;
+  }
 }
 
 async function createJournal({ name, doc, meta, rows, folder, gmOnly }) {
@@ -62,7 +69,7 @@ async function createJournal({ name, doc, meta, rows, folder, gmOnly }) {
   return journal;
 }
 
-function buildPages({ doc, meta, rows, gmOnly }) {
+export function buildPages({ doc, meta, rows, gmOnly }) {
   const pages = [];
   const page = (pageName, content) => pages.push({
     name: pageName,
@@ -117,13 +124,4 @@ function list(rows, gmOnly) {
     return `<li>${escapeHtml(formatRow(row))}${tag}${quote}</li>`;
   }).join('\n');
   return `<ul>${items}</ul>`;
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
 }
