@@ -7,6 +7,9 @@ import { ClipStore, createIndexedDbBackend, createMemoryBackend } from './ClipSt
 import { WorldWitness } from './WorldWitness.js';
 import { buildSessionLog } from './sessionLog.js';
 import { findPreviousSession, summarizeForHistory } from './campaignHistory.js';
+import {
+  BEACON, describeState, needsConsent, summarizeConsent, describeConsentGate
+} from './recordingBeacon.js';
 import { escapeHtml } from './html.js';
 import { extensionFor } from './transcript.js';
 import { collectVocabulary, parseTermList } from './vocabulary.js';
@@ -60,6 +63,36 @@ class EchoCodexNotes {
       type: Number,
       range: { min: 0, max: 60, step: 5 },
       default: 10
+    });
+
+    register('requireConsent', {
+      name: 'Ask players before recording',
+      hint: 'Show each player a one-time notice that sessions may be recorded, and let them '
+        + 'agree or object. The GM is warned before starting if anyone objected.',
+      scope: 'world',
+      config: true,
+      type: Boolean,
+      default: true
+    });
+
+    register('consentAnswers', {
+      name: 'Consent answers',
+      scope: 'world',
+      config: false,
+      type: Object,
+      default: {}
+    });
+
+    register('retentionDays', {
+      name: 'Keep recordings for (days)',
+      hint: 'Stored audio from interrupted sessions is deleted after this many days. '
+        + '0 keeps it until you delete it yourself. Audio is always deleted once it '
+        + 'has successfully become notes.',
+      scope: 'world',
+      config: true,
+      type: Number,
+      range: { min: 0, max: 90, step: 1 },
+      default: 14
     });
 
     register('useSessionLog', {
@@ -208,6 +241,17 @@ class EchoCodexNotes {
       default: true
     });
 
+    register('handoutOwnership', {
+      name: 'Player handout permission',
+      hint: 'What players get on the exported handout. Observer lets them read it; '
+        + 'Owner also lets them edit and add their own notes.',
+      scope: 'world',
+      config: true,
+      type: String,
+      choices: { observer: 'Can read', owner: 'Can read and edit' },
+      default: 'observer'
+    });
+
     register('separateGMNotes', {
       name: 'Separate GM notes',
       hint: 'Export a GM-only journal plus a player-facing handout, instead of one shared journal.',
@@ -234,7 +278,28 @@ class EchoCodexNotes {
     anchor.prepend(indicator);
   }
 
+  /** Players are told what the recorder is doing; they cannot see it otherwise. */
+  static broadcastRecordingState(status) {
+    if (!game.user.isGM) return;
+    game.socket.emit(SOCKET, {
+      type: BEACON,
+      status,
+      startedAt: this.recorder.startTime ?? null
+    });
+  }
+
+  static applyRecordingState(payload) {
+    const state = describeState({ status: payload.status, startedAt: payload.startedAt });
+    const indicator = document.querySelector('#echo-codex-indicator');
+    if (!indicator) return;
+    indicator.className = `echo-codex-indicator status-${state.className}`;
+    indicator.title = state.label;
+    const text = indicator.querySelector('.status-text');
+    if (text) text.textContent = state.recording ? state.label : 'Echo Codex';
+  }
+
   static updateIndicator(status) {
+    this.broadcastRecordingState(status);
     const indicator = document.querySelector('#echo-codex-indicator');
     if (indicator) {
       const text = indicator.querySelector('.status-text');
@@ -273,6 +338,8 @@ class EchoCodexNotes {
       return;
     }
 
+    if (!await this.confirmConsent()) return;
+
     // Read once, at the top: the vocabulary has to be ready before the first
     // clip closes, because that clip is transcribed while the game is running.
     this.sessionVocabulary = this.collectVocabulary();
@@ -288,6 +355,75 @@ class EchoCodexNotes {
 
     const started = await this.recorder.startRecording();
     if (!started) this.witness.stop();
+  }
+
+  /**
+   * Warns the GM about anyone who objected, and lets them decide.
+   *
+   * Deliberately not enforced by muting: this module cannot separate one voice
+   * from a shared room, so silently "excluding" someone would be a false
+   * promise. What it can do is make the objection impossible to miss.
+   */
+  static async confirmConsent() {
+    if (!game.settings.get(MODULE_ID, 'requireConsent')) return true;
+
+    const summary = summarizeConsent(
+      game.users.filter(u => !u.isGM && u.active).map(u => ({ id: u.id, name: u.name })),
+      game.settings.get(MODULE_ID, 'consentAnswers') ?? {}
+    );
+    const gate = describeConsentGate(summary);
+    if (!gate.message) return true;
+
+    if (!gate.blocking) {
+      ui.notifications.warn(`Echo Codex: ${gate.message}`);
+      return true;
+    }
+
+    return Dialog.confirm({
+      title: 'Someone objected to being recorded',
+      content: `<p>${escapeHtml(gate.message)}</p><p>Start recording anyway?</p>`,
+      defaultYes: false
+    });
+  }
+
+  /** Asks this player once, and remembers the answer against their user. */
+  static async promptForConsent() {
+    if (game.user.isGM) return;
+    const answers = game.settings.get(MODULE_ID, 'consentAnswers') ?? {};
+    const required = game.settings.get(MODULE_ID, 'requireConsent');
+
+    if (!needsConsent({
+      consentRequired: required,
+      recorded: true,
+      alreadyAnswered: answers[game.user.id] != null
+    })) return;
+
+    const agreed = await Dialog.confirm({
+      title: 'This table records its sessions',
+      content: '<p>The GM may record audio of this game to generate session notes. '
+        + 'Audio is processed through the AI services the GM has configured, and is deleted '
+        + 'once it has become notes.</p><p>Are you comfortable being recorded?</p>',
+      defaultYes: true
+    });
+
+    // Players cannot write world settings, so the GM records the answer.
+    game.socket.emit(SOCKET, {
+      type: 'consent',
+      userId: game.user.id,
+      answer: agreed ? 'agreed' : 'declined'
+    });
+  }
+
+  static async recordConsent(userId, answer) {
+    if (!game.user.isGM) return;
+    const answers = { ...(game.settings.get(MODULE_ID, 'consentAnswers') ?? {}) };
+    answers[userId] = answer;
+    await game.settings.set(MODULE_ID, 'consentAnswers', answers);
+
+    if (answer === 'declined') {
+      const user = game.users.get(userId);
+      ui.notifications.warn(`Echo Codex: ${user?.name ?? 'A player'} declined to be recorded.`);
+    }
   }
 
   static createQueue() {
@@ -529,6 +665,22 @@ class EchoCodexNotes {
     );
   }
 
+  /** Honours the retention window; audio nobody turned into notes does not linger forever. */
+  static async pruneStoredAudio() {
+    const days = Number(game.settings.get(MODULE_ID, 'retentionDays') || 0);
+    if (!days) return;
+    try {
+      const dropped = await this.getClipStore().prune({ maxAgeMs: days * 86_400_000 });
+      if (dropped.length) {
+        ui.notifications.info(
+          `Echo Codex: deleted ${dropped.length} stored recording(s) older than ${days} days.`
+        );
+      }
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Retention sweep failed`, error);
+    }
+  }
+
   static async discardStoredSession(sessionId) {
     if (!this.requireGM()) return;
     const removed = await this.getClipStore().deleteSession(sessionId);
@@ -693,7 +845,12 @@ Hooks.once("ready", () => {
   // so answering players cannot depend on a dialog being open.
   game.socket.on(SOCKET, (payload) => CurationUI.handleSocket(payload));
 
-  if (game.user.isGM) EchoCodexNotes.announceRecoverableSessions();
+  if (game.user.isGM) {
+    EchoCodexNotes.pruneStoredAudio();
+    EchoCodexNotes.announceRecoverableSessions();
+  } else {
+    EchoCodexNotes.promptForConsent();
+  }
 });
 
 window.EchoCodexNotes = EchoCodexNotes;

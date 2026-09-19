@@ -56,11 +56,7 @@ async function getOrCreateFolder(campaignName) {
 }
 
 async function createJournal({ name, doc, meta, rows, folder, gmOnly, history = null }) {
-  const ownership = {
-    default: gmOnly
-      ? CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE
-      : CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER
-  };
+  const ownership = { default: playerOwnershipLevel(gmOnly) };
 
   const journal = await JournalEntry.create({
     name,
@@ -79,6 +75,15 @@ async function createJournal({ name, doc, meta, rows, folder, gmOnly, history = 
   const pages = buildPages({ doc, meta, rows, gmOnly });
   if (pages.length) await journal.createEmbeddedDocuments('JournalEntryPage', pages);
   return journal;
+}
+
+/** GM-only journals stay invisible; the handout's level is the GM's choice. */
+export function playerOwnershipLevel(gmOnly, setting = null) {
+  if (gmOnly) return CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE;
+  const choice = setting ?? game.settings.get(MODULE_ID, 'handoutOwnership');
+  return choice === 'owner'
+    ? CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER
+    : CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER;
 }
 
 export function buildPages({ doc, meta, rows, gmOnly }) {

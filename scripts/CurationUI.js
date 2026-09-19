@@ -71,10 +71,21 @@ export class CurationUI extends Application {
   static handleSocket(payload) {
     if (!payload) return;
 
+    // The recording beacon travels the other way — GM to players — so it is
+    // handled before the GM-only branch below.
+    if (payload.type === 'recordingState') {
+      if (!game.user.isGM) window.EchoCodexNotes?.applyRecordingState(payload);
+      return;
+    }
+
     if (game.user.isGM) {
       // With two GMs connected, both would answer and the second would clobber
       // the first; only the primary speaks for the table.
       if (!isPrimaryGM()) return;
+      if (payload.type === 'consent') {
+        window.EchoCodexNotes?.recordConsent(payload.userId, payload.answer);
+        return;
+      }
       const app = window.EchoCodexNotes?.activeCuration;
       if (!app) return;
       if (payload.type === 'vote') app.applyVote(payload.rowId, payload.userId, payload.vote);

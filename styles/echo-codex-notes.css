@@ -160,3 +160,23 @@
   opacity: 0.75;
   font-variant-numeric: tabular-nums;
 }
+
+/* The table must be able to see that it is being recorded, not just the GM. */
+.echo-codex-indicator.status-recording .status-dot {
+  background: #d64545;
+  box-shadow: 0 0 0 3px rgba(214, 69, 69, 0.25);
+  animation: echo-codex-pulse 2s ease-in-out infinite;
+}
+
+.echo-codex-indicator.status-paused .status-dot {
+  background: #d6a445;
+}
+
+@keyframes echo-codex-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .echo-codex-indicator.status-recording .status-dot { animation: none; }
+}

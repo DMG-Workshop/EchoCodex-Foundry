@@ -160,6 +160,34 @@ GM-only rows are removed from the socket payload before it is sent, not hidden
 by the template: the message lands in every player's browser, where anything
 merely hidden is one console command away.
 
+## Recording people
+
+This module records the voices of everyone at the table, so the table should be
+able to tell. The sidebar indicator now shows the live recording state on
+**every** client, not just the GM's — a red pulsing dot while recording, amber
+while paused. Previously the indicator existed on player clients but never
+changed, because status was never sent anywhere.
+
+Each player is asked once, per world, whether they are comfortable being
+recorded. The answer is remembered, so nobody is prompted on every reload —
+a notice people learn to dismiss is not consent.
+
+If someone objects, the GM is warned before recording starts and has to confirm.
+This is deliberately **not** enforced by muting anyone: the module cannot
+separate one voice from a shared room, so quietly "excluding" a player would be
+a false promise. What it can do is make the objection impossible to miss and
+leave the decision with the person running the table.
+
+Turn the whole flow off with **Ask players before recording** if your table has
+settled this some other way.
+
+### Retention
+
+Stored audio from interrupted sessions is deleted after **Keep recordings for**
+days (14 by default; 0 keeps it until you delete it). Audio is always deleted as
+soon as it has successfully become notes — the retention window only covers
+recordings that never got that far.
+
 ## Export
 
 With **Separate GM notes** on (default), exporting creates two Journal Entries
@@ -188,6 +216,9 @@ synced to players. Configure per stage in module settings:
 | Campaign glossary | Names to feed both stages. World-scoped, not a secret |
 | Use the table's own records | Fold in chat, rolls, scene and combat changes |
 | Carry continuity between sessions | Give the model last session's summary and threads |
+| Ask players before recording | One-time consent notice per player |
+| Keep recordings for (days) | Retention for interrupted sessions (default 14) |
+| Player handout permission | Whether players can read, or read and edit |
 | Enable player voting | Lets players vote on rows |
 | Separate GM notes | GM journal + player handout, or one shared journal |
 

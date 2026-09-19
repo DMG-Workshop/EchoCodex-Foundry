@@ -90,8 +90,9 @@ test('init registers every setting the pipeline reads', () => {
     'importNote', 'recordingSource', 'clipMinutes', 'transcribeDuringSession',
     'sttProvider', 'sttBaseUrl', 'sttApiKey', 'sttModel', 'sttLanguage',
     'structureProvider', 'structureBaseUrl', 'structureApiKey', 'structureModel',
-    'glossary', 'useSessionLog', 'useCampaignHistory',
-    'enablePlayerVoting', 'separateGMNotes'
+    'glossary', 'requireConsent', 'consentAnswers', 'retentionDays',
+    'useSessionLog', 'useCampaignHistory',
+    'enablePlayerVoting', 'handoutOwnership', 'separateGMNotes'
   ];
   for (const key of expected) assert.ok(registered.has(key), `setting not registered: ${key}`);
 });
@@ -216,4 +217,40 @@ test('continuity honours its off switch', () => {
   overrides.set('useCampaignHistory', false);
   assert.equal(globalThis.EchoCodexNotes.findPreviousSession(), null);
   overrides.delete('useCampaignHistory');
+});
+
+test('consent is on by default and stored world-side', () => {
+  hooks.get('init')();
+  assert.equal(registered.get('requireConsent').default, true);
+  assert.equal(registered.get('requireConsent').scope, 'world');
+  // Players cannot write world settings, so answers must live world-side.
+  assert.equal(registered.get('consentAnswers').scope, 'world');
+  assert.equal(registered.get('consentAnswers').config, false);
+});
+
+test('stored audio has a finite default retention', () => {
+  hooks.get('init')();
+  const retention = registered.get('retentionDays');
+  assert.equal(retention.type, Number);
+  assert.ok(retention.default > 0, 'audio of real people should not linger by default');
+});
+
+test('the handout defaults to read-only', () => {
+  hooks.get('init')();
+  assert.equal(registered.get('handoutOwnership').default, 'observer');
+});
+
+test('recording state is broadcast, so players can see it', () => {
+  hooks.get('init')();
+  const sent = [];
+  const emit = game.socket.emit;
+  game.socket.emit = (channel, payload) => sent.push(payload);
+  try {
+    globalThis.EchoCodexNotes.broadcastRecordingState('recording');
+  } finally {
+    game.socket.emit = emit;
+  }
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, 'recordingState');
+  assert.equal(sent[0].status, 'recording');
 });
