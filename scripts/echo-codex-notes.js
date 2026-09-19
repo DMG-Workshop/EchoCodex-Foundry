@@ -14,6 +14,8 @@ import {
   BEACON, describeState, needsConsent, summarizeConsent, describeConsentGate
 } from './recordingBeacon.js';
 import { escapeHtml } from './html.js';
+import { t } from './i18n.js';
+import { confirm as confirmDialog } from './dialogs.js';
 import { extensionFor } from './transcript.js';
 import { collectVocabulary, parseTermList } from './vocabulary.js';
 
@@ -360,11 +362,11 @@ class EchoCodexNotes {
       const text = indicator.querySelector('.status-text');
       indicator.className = `echo-codex-indicator status-${status}`;
       if (text) text.textContent = {
-        ready: 'Echo Codex',
-        recording: 'Recording',
-        paused: 'Paused',
-        processing: 'Processing…',
-        error: 'Error'
+        ready: t('ECHOCODEX.Indicator.Ready', 'Echo Codex'),
+        recording: t('ECHOCODEX.Indicator.Recording', 'Recording'),
+        paused: t('ECHOCODEX.Indicator.Paused', 'Paused'),
+        processing: t('ECHOCODEX.Indicator.Processing', 'Processing…'),
+        error: t('ECHOCODEX.Indicator.Error', 'Error')
       }[status] ?? status;
     }
 
@@ -389,7 +391,7 @@ class EchoCodexNotes {
   static async startRecording() {
     if (!this.requireGM()) return;
     if (this.recorder.isRecording) {
-      ui.notifications.warn('A recording is already running.');
+      ui.notifications.warn(t('ECHOCODEX.Notify.AlreadyRecording', 'A recording is already running.'));
       return;
     }
 
@@ -434,8 +436,8 @@ class EchoCodexNotes {
       return true;
     }
 
-    return Dialog.confirm({
-      title: 'Someone objected to being recorded',
+    return confirmDialog({
+      title: t('ECHOCODEX.Consent.ObjectionTitle', 'Someone objected to being recorded'),
       content: `<p>${escapeHtml(gate.message)}</p><p>Start recording anyway?</p>`,
       defaultYes: false
     });
@@ -453,8 +455,8 @@ class EchoCodexNotes {
       alreadyAnswered: answers[game.user.id] != null
     })) return;
 
-    const agreed = await Dialog.confirm({
-      title: 'This table records its sessions',
+    const agreed = await confirmDialog({
+      title: t('ECHOCODEX.Consent.Title', 'This table records its sessions'),
       content: '<p>The GM may record audio of this game to generate session notes. '
         + 'Audio is processed through the AI services the GM has configured, and is deleted '
         + 'once it has become notes.</p><p>Are you comfortable being recorded?</p>',
@@ -559,7 +561,7 @@ class EchoCodexNotes {
 
       const segments = await this.transcribeSession(result, { notify, vocabulary });
       const transcriptText = segments.map(s => s.text).join(' ').trim();
-      if (!transcriptText) throw new Error('The transcript came back empty.');
+      if (!transcriptText) throw new Error(t('ECHOCODEX.Notify.EmptyTranscript', 'The transcript came back empty.'));
 
       const gaps = this.queue?.describeGaps();
       if (gaps) ui.notifications.warn(`Echo Codex: ${gaps}`);
@@ -576,7 +578,7 @@ class EchoCodexNotes {
         .join('\n');
       const rows = flattenDocument(doc);
       if (!rows.length) {
-        ui.notifications.warn('Nothing structured out of this recording — the transcript may be too short.');
+        ui.notifications.warn(t('ECHOCODEX.Notify.NothingStructured', 'Nothing structured out of this recording — the transcript may be too short.'));
       }
 
       this.updateIndicator('ready');
@@ -698,7 +700,7 @@ class EchoCodexNotes {
       const segments = await this.queue.drain();
 
       const transcriptText = segments.map(s => s.text).join(' ').trim();
-      if (!transcriptText) throw new Error('The transcript came back empty.');
+      if (!transcriptText) throw new Error(t('ECHOCODEX.Notify.EmptyTranscript', 'The transcript came back empty.'));
 
       const gaps = this.queue.describeGaps();
       if (gaps) ui.notifications.warn(`Echo Codex: ${gaps}`);
@@ -757,7 +759,7 @@ class EchoCodexNotes {
       const draft = game.settings.get(MODULE_ID, 'curationDraft');
       if (!draft?.rows?.length) return;
       await CurationUI.restoreDraft();
-      ui.notifications.info('Echo Codex: restored session notes you had not exported yet.');
+      ui.notifications.info(t('ECHOCODEX.Notify.DraftRestored', 'Echo Codex: restored session notes you had not exported yet.'));
     } catch (error) {
       console.warn(`${MODULE_ID} | Could not restore curation`, error);
     }
@@ -781,7 +783,7 @@ class EchoCodexNotes {
     const description = describeEstimate(estimate);
     if (!description) return true;
 
-    return Dialog.confirm({
+    return confirmDialog({
       title: 'Structure these notes?',
       content: `<p>${escapeHtml(description)}</p>`,
       defaultYes: true
@@ -834,7 +836,7 @@ class EchoCodexNotes {
         this.activeCuration.render(true);
         this.activeCuration.bringToTop();
       } else {
-        ui.notifications.info('No session notes yet. Record and process a session first.');
+        ui.notifications.info(t('ECHOCODEX.Notify.NoNotes', 'No session notes yet. Record and process a session first.'));
       }
       return;
     }
@@ -913,7 +915,7 @@ class EchoCodexNotes {
 
   static requireGM() {
     if (game.user.isGM) return true;
-    ui.notifications.warn('Only the GM can control session recording.');
+    ui.notifications.warn(t('ECHOCODEX.Notify.GMOnly', 'Only the GM can control session recording.'));
     return false;
   }
 }
@@ -977,6 +979,70 @@ async function importEchoCodexNote(raw) {
 Hooks.once("init", () => {
   console.info(`${MODULE_ID} | Echo Codex Notes initialized`);
   EchoCodexNotes.registerSettings();
+  registerKeybindings();
+});
+
+/** Keyboard control, so a GM is not reaching for a macro bar mid-scene. */
+function registerKeybindings() {
+  game.keybindings.register(MODULE_ID, 'toggleRecording', {
+    name: t('ECHOCODEX.Keybindings.Toggle', 'Start or stop recording'),
+    editable: [{ key: 'KeyR', modifiers: ['Control', 'Shift'] }],
+    restricted: true,
+    onDown: () => {
+      if (EchoCodexNotes.recorder.isRecording) EchoCodexNotes.stopRecordingAndProcess();
+      else EchoCodexNotes.startRecording();
+      return true;
+    }
+  });
+
+  game.keybindings.register(MODULE_ID, 'pauseResume', {
+    name: t('ECHOCODEX.Keybindings.PauseResume', 'Pause or resume recording'),
+    editable: [{ key: 'KeyP', modifiers: ['Control', 'Shift'] }],
+    restricted: true,
+    onDown: () => {
+      if (EchoCodexNotes.recorder.isPaused) EchoCodexNotes.resumeRecording();
+      else EchoCodexNotes.pauseRecording();
+      return true;
+    }
+  });
+
+  game.keybindings.register(MODULE_ID, 'openNotes', {
+    name: t('ECHOCODEX.Keybindings.OpenNotes', 'Open session notes'),
+    editable: [{ key: 'KeyN', modifiers: ['Control', 'Shift'] }],
+    onDown: () => { EchoCodexNotes.openCuration(); return true; }
+  });
+}
+
+/**
+ * A proper scene-control group, rather than a div injected by DOM query.
+ *
+ * `createIndicator` reaches for `#ui-left` and prepends to it, which any core
+ * layout change silently breaks. The controls below are the supported surface;
+ * the indicator stays because it is also the table's recording light.
+ */
+Hooks.on('getSceneControlButtons', (controls) => {
+  if (!game.user.isGM) return;
+
+  const tools = [
+    { name: 'start', title: t('ECHOCODEX.Controls.Start', 'Start recording'), icon: 'fas fa-microphone', button: true, onClick: () => EchoCodexNotes.startRecording() },
+    { name: 'pause', title: t('ECHOCODEX.Controls.Pause', 'Pause recording'), icon: 'fas fa-pause', button: true, onClick: () => EchoCodexNotes.pauseRecording() },
+    { name: 'resume', title: t('ECHOCODEX.Controls.Resume', 'Resume recording'), icon: 'fas fa-play', button: true, onClick: () => EchoCodexNotes.resumeRecording() },
+    { name: 'stop', title: t('ECHOCODEX.Controls.Stop', 'Stop and process'), icon: 'fas fa-stop', button: true, onClick: () => EchoCodexNotes.stopRecordingAndProcess() },
+    { name: 'notes', title: t('ECHOCODEX.Controls.Notes', 'Session notes'), icon: 'fas fa-book-open', button: true, onClick: () => EchoCodexNotes.openCuration() }
+  ];
+
+  const group = {
+    name: 'echo-codex',
+    title: t('ECHOCODEX.Controls.Group', 'Echo Codex'),
+    icon: 'fas fa-waveform-lines',
+    layer: 'tokens',
+    tools,
+    activeTool: 'start'
+  };
+
+  // v13 hands over a record keyed by name; v12 an array.
+  if (Array.isArray(controls)) controls.push(group);
+  else controls['echo-codex'] = { ...group, tools: Object.fromEntries(tools.map(tool => [tool.name, tool])) };
 });
 
 Hooks.once("ready", () => {

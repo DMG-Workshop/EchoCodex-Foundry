@@ -27,8 +27,14 @@ class StubApplication {
 globalThis.Application = StubApplication;
 globalThis.Dialog = { confirm: async () => false };
 globalThis.foundry = { utils: { mergeObject: (a, b) => ({ ...a, ...b }) }, applications: {} };
+const hookHandlers = new Map();
 globalThis.Hooks = {
-  once: (name, fn) => hooks.set(name, fn),
+  once: (name, fn) => {
+    const list = hookHandlers.get(name) ?? [];
+    list.push(fn);
+    hookHandlers.set(name, list);
+    hooks.set(name, (...args) => list.forEach(handler => handler(...args)));
+  },
   on: () => Math.floor(Math.random() * 1e6),
   off: () => {}
 };
@@ -43,7 +49,10 @@ globalThis.ui = {
     error: (m) => notifications.push(['error', m])
   }
 };
+const keybindings = new Map();
 globalThis.game = {
+  keybindings: { register: (module, key, data) => keybindings.set(key, data) },
+  i18n: { localize: (key) => key },
   world: { title: 'Redbridge' },
   user: { isGM: true, id: 'gm1', name: 'The GM' },
   users: Object.assign([], { activeGM: { id: 'gm1' } }),
@@ -253,4 +262,21 @@ test('recording state is broadcast, so players can see it', () => {
   assert.equal(sent.length, 1);
   assert.equal(sent[0].type, 'recordingState');
   assert.equal(sent[0].status, 'recording');
+});
+
+test('keyboard shortcuts are registered and GM-restricted where they should be', () => {
+  hooks.get('init')();
+  assert.ok(keybindings.has('toggleRecording'));
+  assert.ok(keybindings.has('pauseResume'));
+  assert.ok(keybindings.has('openNotes'));
+  assert.equal(keybindings.get('toggleRecording').restricted, true, 'players must not start recordings');
+  assert.equal(keybindings.get('pauseResume').restricted, true);
+  // Opening the notes is a player action too, so it is deliberately unrestricted.
+  assert.notEqual(keybindings.get('openNotes').restricted, true);
+});
+
+test('registering keybindings does not displace the settings registration', () => {
+  hooks.get('init')();
+  assert.ok(registered.has('importNote'), 'both init handlers must run');
+  assert.ok(keybindings.size > 0);
 });

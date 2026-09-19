@@ -260,6 +260,24 @@ client-side code. That is acceptable for a GM running their own world on their
 own machine; it is not a pattern to reuse for a public deployment. A local
 endpoint avoids the question entirely.
 
+## Controls
+
+The module adds an **Echo Codex** scene-control group (start, pause, resume,
+stop, notes) and keyboard shortcuts:
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+R` | Start, or stop and process |
+| `Ctrl+Shift+P` | Pause or resume |
+| `Ctrl+Shift+N` | Open session notes |
+
+All rebindable in Foundry's own keybinding settings. The first two are
+GM-restricted; opening the notes is not, since players read them too.
+
+Interface strings live in `lang/en.json` and go through Foundry's localization,
+with an English fallback so a missing translation shows readable text rather
+than a raw key.
+
 ## Macros
 
 Create Script Macros with these one-liners:

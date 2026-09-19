@@ -2,6 +2,7 @@ import {
   groupRows, tally, formatRow, redactForPlayers, canMerge, votedDown, filterRows, snapshot
 } from './curationModel.js';
 import { exportToJournals } from './JournalExporter.js';
+import { confirm as confirmDialog, render as renderTemplateCompat } from './dialogs.js';
 
 const MODULE_ID = 'echo-codex-notes';
 export const SOCKET = `module.${MODULE_ID}`;
@@ -373,8 +374,7 @@ export class CurationUI extends Application {
     }
 
     const gmOnly = included.filter(r => r.gmOnly).length;
-    const render = foundry.applications?.handlebars?.renderTemplate ?? renderTemplate;
-    const content = await render(`modules/${MODULE_ID}/templates/export-dialog.html`, {
+    const content = await renderTemplateCompat(`modules/${MODULE_ID}/templates/export-dialog.html`, {
       meta: this.meta,
       totalCount: included.length,
       gmOnlyCount: gmOnly,
@@ -382,7 +382,7 @@ export class CurationUI extends Application {
       separateGMNotes: game.settings.get(MODULE_ID, 'separateGMNotes')
     });
 
-    const confirmed = await Dialog.confirm({
+    const confirmed = await confirmDialog({
       title: 'Export Session Notes',
       content,
       defaultYes: true
