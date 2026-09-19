@@ -98,8 +98,47 @@ jobs:
             fs.writeFileSync("module.json", JSON.stringify(m, null, 2) + "\n");
           '
 
+      # Derived from the manifest rather than hand-listed: a hand-written list
+      # silently drifts the moment module.json declares something new, and the
+      # result is a release whose manifest points at a file the zip omits.
       - name: Build the module zip
-        run: zip -r echo-codex-notes.zip module.json scripts styles templates README.md
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(node -e '
+            const m = JSON.parse(require("fs").readFileSync("module.json", "utf8"));
+            const roots = new Set(["module.json", "README.md"]);
+            const add = (p) => { if (p) roots.add(String(p).split("/")[0]); };
+            for (const p of m.esmodules ?? []) add(p);
+            for (const p of m.scripts ?? []) add(p);
+            for (const p of m.styles ?? []) add(p);
+            for (const p of m.templates ?? []) add(p);
+            for (const l of m.languages ?? []) add(l.path);
+            for (const p of m.packs ?? []) add(p.path);
+            console.log([...roots].join("\n"));
+          ')
+          echo "Packaging: ${paths[*]}"
+          zip -r echo-codex-notes.zip "${paths[@]}"
+
+      - name: Check the zip contains everything the manifest declares
+        run: |
+          set -euo pipefail
+          node -e '
+            const { execSync } = require("child_process");
+            const m = JSON.parse(require("fs").readFileSync("module.json", "utf8"));
+            const listed = execSync("unzip -Z1 echo-codex-notes.zip").toString().split("\n");
+            const declared = [
+              ...(m.esmodules ?? []), ...(m.scripts ?? []),
+              ...(m.styles ?? []), ...(m.templates ?? []),
+              ...(m.languages ?? []).map(l => l.path),
+              ...(m.packs ?? []).map(p => p.path)
+            ];
+            const missing = declared.filter(p => !listed.includes(p));
+            if (missing.length) {
+              console.error("Declared in module.json but missing from the zip:\n  " + missing.join("\n  "));
+              process.exit(1);
+            }
+            console.log(`All ${declared.length} declared files are packaged.`);
+          '
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
