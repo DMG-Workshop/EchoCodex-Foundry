@@ -2,7 +2,7 @@
   "id": "echo-codex-notes",
   "title": "Echo Codex Notes",
   "description": "Record a game session in Foundry, transcribe and structure it with your own AI, curate what matters with the table, and export to journals and player handouts. Also imports Echo Codex JSON exports.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "compatibility": {
     "minimum": "12",
     "verified": "13"

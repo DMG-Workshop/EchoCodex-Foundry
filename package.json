@@ -1,8 +1,8 @@
 {
   "name": "echo-codex-notes",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Foundry VTT module — record, structure, curate and export tabletop session notes.",
+  "description": "Foundry VTT module \u2014 record, structure, curate and export tabletop session notes.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js"
