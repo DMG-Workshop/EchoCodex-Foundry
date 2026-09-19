@@ -110,6 +110,35 @@ world-scoped, so it follows the campaign rather than the GM's browser. Setting
 **Spoken language** is worth it too: left blank, each clip is detected
 independently, and a quiet clip can come back as the wrong language.
 
+## What Foundry already knows
+
+The transcript is a guess at what was said. The world's own record is not — chat
+was typed, dice rolls happened, combats started, scenes changed, all timestamped
+and none of it subject to mishearing. That record is folded in on the same clock
+as the transcript, so the model can anchor against it and correct names, numbers
+and the order of events where the two disagree.
+
+**Whispers are never included.** A private message between the GM and one player
+is not table record, and putting it into shared notes would publish it.
+
+Under budget pressure the session's skeleton wins: scene and combat changes are
+kept ahead of the hundredth attack roll. And the log is presented as evidence
+rather than narrative — a roll is not a story beat, and nothing there becomes a
+decision unless the transcript shows the table making one.
+
+Turn off with **Use the table's own records**.
+
+### Between sessions
+
+Each exported GM journal carries forward a small continuity record — the
+summary, the loose threads, what the party said they would do. The next session
+is given it as background, so an NPC met three weeks ago is not re-introduced as
+a stranger and names stay consistent.
+
+It is explicitly marked as background rather than source: nothing from last week
+enters this week's notes unless this week's transcript shows it happening again.
+Turn off with **Carry continuity between sessions**.
+
 ## Curation
 
 After processing, the GM gets a checklist of everything the model extracted —
@@ -157,6 +186,8 @@ synced to players. Configure per stage in module settings:
 | Spoken language | ISO-639-1 code, or blank to detect per clip |
 | Structuring provider / endpoint / key / model | Claude (default `claude-opus-5`), OpenAI-compatible, or Gemini |
 | Campaign glossary | Names to feed both stages. World-scoped, not a secret |
+| Use the table's own records | Fold in chat, rolls, scene and combat changes |
+| Carry continuity between sessions | Give the model last session's summary and threads |
 | Enable player voting | Lets players vote on rows |
 | Separate GM notes | GM journal + player handout, or one shared journal |
 

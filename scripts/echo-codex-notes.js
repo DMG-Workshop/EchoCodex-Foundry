@@ -4,6 +4,9 @@ import { flattenDocument } from './curationModel.js';
 import { transcribe, transcribeClip, structure } from './providers.js';
 import { TranscriptionQueue } from './TranscriptionQueue.js';
 import { ClipStore, createIndexedDbBackend, createMemoryBackend } from './ClipStore.js';
+import { WorldWitness } from './WorldWitness.js';
+import { buildSessionLog } from './sessionLog.js';
+import { findPreviousSession, summarizeForHistory } from './campaignHistory.js';
 import { escapeHtml } from './html.js';
 import { extensionFor } from './transcript.js';
 import { collectVocabulary, parseTermList } from './vocabulary.js';
@@ -17,6 +20,7 @@ class EchoCodexNotes {
   static clipStore = null;
   static queue = null;
   static sessionVocabulary = [];
+  static witness = new WorldWitness();
 
   static registerSettings() {
     const register = (key, data) => game.settings.register(MODULE_ID, key, data);
@@ -56,6 +60,27 @@ class EchoCodexNotes {
       type: Number,
       range: { min: 0, max: 60, step: 5 },
       default: 10
+    });
+
+    register('useSessionLog', {
+      name: 'Use the table\'s own records',
+      hint: 'Fold typed chat, dice rolls, and scene and combat changes into the notes. '
+        + 'These are literal where the transcript is a guess, so they correct misheard names '
+        + 'and numbers. Whispers are never included.',
+      scope: 'world',
+      config: true,
+      type: Boolean,
+      default: true
+    });
+
+    register('useCampaignHistory', {
+      name: 'Carry continuity between sessions',
+      hint: 'Give the model the previous session\'s summary and loose threads, so names and '
+        + 'storylines stay consistent week to week.',
+      scope: 'world',
+      config: true,
+      type: Boolean,
+      default: true
     });
 
     register('transcribeDuringSession', {
@@ -259,7 +284,10 @@ class EchoCodexNotes {
       if (live) this.queue.enqueue(clip);
     };
 
-    await this.recorder.startRecording();
+    if (game.settings.get(MODULE_ID, 'useSessionLog')) this.witness.start();
+
+    const started = await this.recorder.startRecording();
+    if (!started) this.witness.stop();
   }
 
   static createQueue() {
@@ -313,6 +341,8 @@ class EchoCodexNotes {
   /** Stops capture, runs the two-stage pipeline, then opens curation. */
   static async stopRecordingAndProcess() {
     if (!this.requireGM()) return;
+
+    this.witness.stop();
 
     const result = await this.recorder.stopRecording();
     if (!result) {
@@ -558,8 +588,34 @@ class EchoCodexNotes {
       sceneName: result.metadata.sceneName,
       gm: result.metadata.gm,
       players: result.metadata.players,
-      vocabulary
+      vocabulary,
+      sessionLog: this.collectSessionLog(result.metadata),
+      previousSession: this.findPreviousSession()
     };
+  }
+
+  /** The world's own record of the session, on the transcript's clock. */
+  static collectSessionLog(metadata) {
+    if (!game.settings.get(MODULE_ID, 'useSessionLog')) return [];
+    try {
+      return buildSessionLog(
+        { messages: WorldWitness.readChatLog(), events: this.witness.events },
+        { startedAt: metadata.startTime, endedAt: metadata.endTime }
+      );
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Could not assemble the session log`, error);
+      return [];
+    }
+  }
+
+  static findPreviousSession() {
+    if (!game.settings.get(MODULE_ID, 'useCampaignHistory')) return null;
+    try {
+      return findPreviousSession(game.journal?.contents ?? []);
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Could not read the previous session`, error);
+      return null;
+    }
   }
 
   static requireGM() {

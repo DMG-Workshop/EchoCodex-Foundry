@@ -1,6 +1,8 @@
 import { NOTE_DOCUMENT_SCHEMA } from './noteDocumentSchema.js';
 import { inlineRefs, toGeminiSchema } from './schemaTools.js';
 import { buildClipPrompt, renderVocabularySection } from './vocabulary.js';
+import { renderSessionLog } from './sessionLog.js';
+import { renderPreviousSession } from './campaignHistory.js';
 import {
   extensionFor,
   offsetSegments,
@@ -368,7 +370,7 @@ DEDUPLICATION
 The same commitment restated three times is one task. Merge, and cite the clearest statement.
 
 STUDY AIDS
-Return null for keyConcepts, flashcards and quiz — they are not used here.${renderVocabularySection(context.vocabulary)}`;
+Return null for keyConcepts, flashcards and quiz — they are not used here.${renderVocabularySection(context.vocabulary)}${renderPreviousSession(context.previousSession)}${renderSessionLog(context.sessionLog)}`;
 }
 
 function toBase64(blob) {

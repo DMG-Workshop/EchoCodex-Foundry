@@ -27,7 +27,11 @@ class StubApplication {
 globalThis.Application = StubApplication;
 globalThis.Dialog = { confirm: async () => false };
 globalThis.foundry = { utils: { mergeObject: (a, b) => ({ ...a, ...b }) }, applications: {} };
-globalThis.Hooks = { once: (name, fn) => hooks.set(name, fn), on: () => {} };
+globalThis.Hooks = {
+  once: (name, fn) => hooks.set(name, fn),
+  on: () => Math.floor(Math.random() * 1e6),
+  off: () => {}
+};
 globalThis.CONST = {
   JOURNAL_ENTRY_PAGE_FORMATS: { HTML: 1 },
   DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0, OBSERVER: 2 }
@@ -86,7 +90,8 @@ test('init registers every setting the pipeline reads', () => {
     'importNote', 'recordingSource', 'clipMinutes', 'transcribeDuringSession',
     'sttProvider', 'sttBaseUrl', 'sttApiKey', 'sttModel', 'sttLanguage',
     'structureProvider', 'structureBaseUrl', 'structureApiKey', 'structureModel',
-    'glossary', 'enablePlayerVoting', 'separateGMNotes'
+    'glossary', 'useSessionLog', 'useCampaignHistory',
+    'enablePlayerVoting', 'separateGMNotes'
   ];
   for (const key of expected) assert.ok(registered.has(key), `setting not registered: ${key}`);
 });
@@ -186,4 +191,29 @@ test('the recovery entry points the notification names actually exist', () => {
   for (const fn of ['recoverSessions', 'processStoredSession', 'discardStoredSession']) {
     assert.equal(typeof globalThis.EchoCodexNotes[fn], 'function', `missing: ${fn}`);
   }
+});
+
+test('the world-record settings are world-scoped and on by default', () => {
+  hooks.get('init')();
+  for (const key of ['useSessionLog', 'useCampaignHistory']) {
+    assert.equal(registered.get(key).scope, 'world', `${key} should be campaign-wide`);
+    assert.equal(registered.get(key).default, true);
+  }
+});
+
+test('the session log honours its off switch', () => {
+  hooks.get('init')();
+  overrides.set('useSessionLog', false);
+  assert.deepEqual(
+    globalThis.EchoCodexNotes.collectSessionLog({ startTime: new Date(), endTime: new Date() }),
+    []
+  );
+  overrides.delete('useSessionLog');
+});
+
+test('continuity honours its off switch', () => {
+  hooks.get('init')();
+  overrides.set('useCampaignHistory', false);
+  assert.equal(globalThis.EchoCodexNotes.findPreviousSession(), null);
+  overrides.delete('useCampaignHistory');
 });

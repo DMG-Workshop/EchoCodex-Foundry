@@ -1,5 +1,6 @@
 import { groupRows, formatRow, GROUPS } from './curationModel.js';
 import { escapeHtml } from './html.js';
+import { summarizeForHistory } from './campaignHistory.js';
 
 const MODULE_ID = 'echo-codex-notes';
 
@@ -16,14 +17,18 @@ export async function exportToJournals({ doc, meta, rows }) {
   if (!separate) {
     const journal = await createJournal({
       name: `${title} — ${dateLabel}`,
-      doc, meta, rows, folder, gmOnly: false
+      doc, meta, rows, folder, gmOnly: false,
+      history: summarizeForHistory(doc, rows)
     });
     return { gmJournal: journal, playerJournal: null };
   }
 
   const gmJournal = await createJournal({
     name: `${title} — ${dateLabel} (GM Notes)`,
-    doc, meta, rows, folder, gmOnly: true
+    doc, meta, rows, folder, gmOnly: true,
+    // Only the GM copy carries continuity: it is the complete record, and the
+    // player handout deliberately is not.
+    history: summarizeForHistory(doc, rows)
   });
 
   const playerRows = rows.filter(r => !r.gmOnly);
@@ -50,7 +55,7 @@ async function getOrCreateFolder(campaignName) {
   }
 }
 
-async function createJournal({ name, doc, meta, rows, folder, gmOnly }) {
+async function createJournal({ name, doc, meta, rows, folder, gmOnly, history = null }) {
   const ownership = {
     default: gmOnly
       ? CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE
@@ -61,7 +66,14 @@ async function createJournal({ name, doc, meta, rows, folder, gmOnly }) {
     name,
     folder: folder?.id ?? null,
     ownership,
-    flags: { [MODULE_ID]: { source: 'Echo Codex', gmOnly, recordedAt: meta.startTime } }
+    flags: {
+      [MODULE_ID]: {
+        source: 'Echo Codex',
+        gmOnly,
+        recordedAt: meta.startTime,
+        ...(history ? { history } : {})
+      }
+    }
   });
 
   const pages = buildPages({ doc, meta, rows, gmOnly });
