@@ -50,6 +50,30 @@ Both stages take a base URL. Point the transcription endpoint at a local
 whisper.cpp server and the structuring endpoint at Ollama or LM Studio, and no
 audio or transcript leaves your network.
 
+## Getting the names right
+
+Transcription fails hardest on invented names, and a misheard one is not
+cosmetic: "Ser Aldric" heard as "sir all drick" becomes a new character in the
+campaign journal. Foundry already knows the real spellings, so the module uses
+them at both stages.
+
+Before transcribing, it assembles the campaign's proper nouns — the GM's
+glossary first, then player characters, then actors on the current scene, then
+the rest of the Actors directory — and sends them as Whisper's biasing prompt,
+so recognition is steered *before* the error happens. The same list goes to the
+structuring model, which corrects what still slipped through and records the
+misheard form in the participant's aliases.
+
+The list is ordered by how likely a name is to be spoken aloud, because both
+stages are budget-limited and drop from the end. Whisper's prompt is capped at
+224 tokens; a bestiary of 500 monsters will not crowd out the party.
+
+Add anything the directory does not know — factions, places, items, the name of
+the tavern — under **Campaign glossary** in the module settings. It is
+world-scoped, so it follows the campaign rather than the GM's browser. Setting
+**Spoken language** is worth it too: left blank, each clip is detected
+independently, and a quiet clip can come back as the wrong language.
+
 ## Curation
 
 After processing, the GM gets a checklist of everything the model extracted —
@@ -93,7 +117,9 @@ synced to players. Configure per stage in module settings:
 | Recording source | Microphone, system audio, or both mixed |
 | Clip length | Minutes per audio clip (default 10). 0 records one file |
 | Transcription provider / endpoint / key / model | OpenAI-compatible (default `whisper-1`) or Gemini |
+| Spoken language | ISO-639-1 code, or blank to detect per clip |
 | Structuring provider / endpoint / key / model | Claude (default `claude-opus-5`), OpenAI-compatible, or Gemini |
+| Campaign glossary | Names to feed both stages. World-scoped, not a secret |
 | Enable player voting | Lets players vote on rows |
 | Separate GM notes | GM journal + player handout, or one shared journal |
 

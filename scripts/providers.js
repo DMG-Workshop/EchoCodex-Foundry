@@ -1,5 +1,6 @@
 import { NOTE_DOCUMENT_SCHEMA } from './noteDocumentSchema.js';
 import { inlineRefs, toGeminiSchema } from './schemaTools.js';
+import { buildWhisperPrompt, renderVocabularySection } from './vocabulary.js';
 import {
   extensionFor,
   offsetSegments,
@@ -41,10 +42,17 @@ async function readError(response) {
  * server (whisper.cpp's server, LM Studio) works by pointing the base URL at
  * it, which is how a table records without a cloud key.
  */
-export async function transcribe(clips, { onProgress } = {}) {
+export async function transcribe(clips, { onProgress, vocabulary = [] } = {}) {
   const provider = setting('sttProvider');
   const list = normalizeClips(clips);
   const segments = [];
+
+  // Every clip gets the same biasing prompt: a name is no less likely to be
+  // spoken in hour three than in hour one.
+  const options = {
+    prompt: buildWhisperPrompt(vocabulary),
+    language: String(setting('sttLanguage') || '').trim()
+  };
 
   for (const [index, clip] of list.entries()) {
     onProgress?.(list.length > 1
@@ -52,8 +60,8 @@ export async function transcribe(clips, { onProgress } = {}) {
       : 'Transcribing audio…');
 
     const transcribeClip = () => (provider === 'gemini'
-      ? transcribeGemini(clip.blob)
-      : transcribeOpenAiCompatible(clip.blob));
+      ? transcribeGemini(clip.blob, options)
+      : transcribeOpenAiCompatible(clip.blob, options));
 
     // A long session is twenty-odd sequential uploads; one blip on clip seven
     // should not cost the other nineteen. A second failure is real and stops
@@ -82,7 +90,7 @@ function normalizeClips(clips) {
   return list.filter(clip => clip?.blob && clip.blob.size > 0);
 }
 
-async function transcribeOpenAiCompatible(audioBlob) {
+async function transcribeOpenAiCompatible(audioBlob, { prompt, language } = {}) {
   const baseUrl = trimUrl(setting('sttBaseUrl')) || 'https://api.openai.com';
   const apiKey = setting('sttApiKey');
   const model = setting('sttModel') || 'whisper-1';
@@ -101,6 +109,12 @@ async function transcribeOpenAiCompatible(audioBlob) {
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'segment');
   form.append('file', audioBlob, `session.${extensionFor(audioBlob)}`);
+  // Whisper biases decoding toward words in the prompt, which is the only
+  // chance to get an invented name right before it becomes a transcript error.
+  if (prompt) form.append('prompt', prompt);
+  // Left blank Whisper detects per clip, and a quiet clip can be detected as a
+  // different language than the rest of the session.
+  if (language) form.append('language', language);
 
   const headers = {};
   if (apiKey) headers['authorization'] = `Bearer ${apiKey}`;
@@ -123,7 +137,7 @@ async function transcribeOpenAiCompatible(audioBlob) {
   }));
 }
 
-async function transcribeGemini(audioBlob) {
+async function transcribeGemini(audioBlob, { prompt } = {}) {
   const apiKey = setting('sttApiKey');
   if (!apiKey) throw new Error('Gemini transcription needs an API key.');
   const model = setting('sttModel') || 'gemini-2.0-flash';
@@ -137,7 +151,12 @@ async function transcribeGemini(audioBlob) {
       body: JSON.stringify({
         contents: [{
           parts: [
-            { text: 'Transcribe this audio verbatim. Return only the transcript text.' },
+            {
+              text: [
+                'Transcribe this audio verbatim. Return only the transcript text.',
+                prompt
+              ].filter(Boolean).join(' ')
+            },
             { inline_data: { mime_type: audioBlob.type || 'audio/webm', data: await toBase64(audioBlob) } }
           ]
         }]
@@ -336,7 +355,7 @@ DEDUPLICATION
 The same commitment restated three times is one task. Merge, and cite the clearest statement.
 
 STUDY AIDS
-Return null for keyConcepts, flashcards and quiz — they are not used here.`;
+Return null for keyConcepts, flashcards and quiz — they are not used here.${renderVocabularySection(context.vocabulary)}`;
 }
 
 function toBase64(blob) {
