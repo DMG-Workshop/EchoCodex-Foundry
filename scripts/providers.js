@@ -1,7 +1,10 @@
 import { NOTE_DOCUMENT_SCHEMA } from './noteDocumentSchema.js';
 import { inlineRefs, toGeminiSchema } from './schemaTools.js';
-import { buildWhisperPrompt, renderVocabularySection } from './vocabulary.js';
+import { buildClipPrompt, renderVocabularySection } from './vocabulary.js';
+import { renderSessionLog } from './sessionLog.js';
+import { renderPreviousSession } from './campaignHistory.js';
 import {
+  approximateTiming,
   extensionFor,
   offsetSegments,
   parseNoteDocument,
@@ -42,6 +45,17 @@ async function readError(response) {
  * server (whisper.cpp's server, LM Studio) works by pointing the base URL at
  * it, which is how a table records without a cloud key.
  */
+export async function transcribeClip(clip, { vocabulary = [], previousTail = '' } = {}) {
+  const provider = setting('sttProvider');
+  const options = {
+    prompt: buildClipPrompt({ vocabulary, previousTail }),
+    language: String(setting('sttLanguage') || '').trim()
+  };
+  if (provider !== 'gemini') return transcribeOpenAiCompatible(clip.blob, options);
+  const segments = await transcribeGemini(clip.blob, options);
+  return approximateTiming(segments, { offsetMs: 0 });
+}
+
 export async function transcribe(clips, { onProgress, vocabulary = [] } = {}) {
   const provider = setting('sttProvider');
   const list = normalizeClips(clips);
@@ -49,17 +63,18 @@ export async function transcribe(clips, { onProgress, vocabulary = [] } = {}) {
 
   // Every clip gets the same biasing prompt: a name is no less likely to be
   // spoken in hour three than in hour one.
-  const options = {
-    prompt: buildWhisperPrompt(vocabulary),
-    language: String(setting('sttLanguage') || '').trim()
-  };
+  let previousTail = '';
 
   for (const [index, clip] of list.entries()) {
     onProgress?.(list.length > 1
       ? `Transcribing part ${index + 1} of ${list.length}…`
       : 'Transcribing audio…');
 
-    const transcribeClip = () => (provider === 'gemini'
+    const options = {
+      prompt: buildClipPrompt({ vocabulary, previousTail }),
+      language: String(setting('sttLanguage') || '').trim()
+    };
+    const runClip = () => (provider === 'gemini'
       ? transcribeGemini(clip.blob, options)
       : transcribeOpenAiCompatible(clip.blob, options));
 
@@ -68,18 +83,19 @@ export async function transcribe(clips, { onProgress, vocabulary = [] } = {}) {
     // the run, which still hands the GM every clip to retry by hand.
     let part;
     try {
-      part = await transcribeClip();
+      part = await runClip();
     } catch (error) {
       console.warn(`${MODULE_ID} | Clip ${index + 1} failed, retrying once`, error);
       onProgress?.(`Retrying part ${index + 1} of ${list.length}…`);
       try {
-        part = await transcribeClip();
+        part = await runClip();
       } catch (retryError) {
         throw new Error(`Part ${index + 1} of ${list.length} failed: ${retryError.message}`);
       }
     }
 
     segments.push(...offsetSegments(part, clip.offsetMs ?? 0));
+    previousTail = part.map(p => p.text ?? '').join(' ').trim().slice(-220);
   }
 
   return segments;
@@ -167,7 +183,9 @@ async function transcribeGemini(audioBlob, { prompt } = {}) {
 
   const data = await response.json();
   const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? '';
-  // Gemini returns prose, not timed segments, so there is nothing to anchor sourceRefs to.
+  // Gemini returns prose, not timed segments. Clip-level timing is coarse but
+  // it is the difference between "somewhere in hour three" and nothing at all;
+  // the caller stamps the clip's own offset on.
   return [{ startMs: null, endMs: null, text }];
 }
 
@@ -355,7 +373,7 @@ DEDUPLICATION
 The same commitment restated three times is one task. Merge, and cite the clearest statement.
 
 STUDY AIDS
-Return null for keyConcepts, flashcards and quiz — they are not used here.${renderVocabularySection(context.vocabulary)}`;
+Return null for keyConcepts, flashcards and quiz — they are not used here.${renderVocabularySection(context.vocabulary)}${renderPreviousSession(context.previousSession)}${renderSessionLog(context.sessionLog)}`;
 }
 
 function toBase64(blob) {

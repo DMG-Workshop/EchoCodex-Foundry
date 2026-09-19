@@ -139,3 +139,38 @@ export function canMerge(rows) {
   if (rows.length < 2) return false;
   return rows.every(row => row.kind === rows[0].kind);
 }
+
+/**
+ * Curation is a long manual pass over a long session, and until now it lived
+ * only in one browser tab: a crash after processing but before export lost the
+ * whole thing, and a mis-click during a merge was unrecoverable. Both are
+ * addressed by keeping history rather than mutating in place.
+ */
+
+/** Rows a vote has clearly turned the table against, for the GM to act on or ignore. */
+export function votedDown(rows, { minVotes = 2, ratio = 0.5 } = {}) {
+  return rows.filter(row => {
+    const counts = tally(row);
+    const total = counts.keep + counts.drop;
+    if (total < minVotes) return false;
+    return counts.drop / total > ratio;
+  });
+}
+
+/** Case-insensitive substring match across everything a row displays. */
+export function filterRows(rows, query) {
+  const needle = String(query ?? '').trim().toLowerCase();
+  if (!needle) return rows;
+  return rows.filter(row => {
+    const haystack = [row.text, row.detail, row.heading, row.assignee, row.sourceRef?.quote]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
+/** A snapshot cheap enough to take before every destructive edit. */
+export function snapshot(rows) {
+  return rows.map(row => ({ ...row, votes: { ...(row.votes ?? {}) } }));
+}

@@ -59,3 +59,24 @@ export function extensionFor(blob) {
   if (type.includes('wav')) return 'wav';
   return 'webm';
 }
+
+/**
+ * Gives an untimed clip the only timing that is actually known: where the clip
+ * itself sits in the session.
+ *
+ * Gemini returns prose with no segment timings, which left every sourceRef with
+ * a null offset and no way to find the moment a note came from. Clip-level
+ * accuracy is coarse — within the clip length — but it is the difference
+ * between "somewhere in hour three" and nothing at all.
+ */
+export function approximateTiming(segments, { offsetMs = 0, durationMs = null } = {}) {
+  return segments.map(segment => {
+    if (segment.startMs != null) return segment;
+    return {
+      ...segment,
+      startMs: offsetMs,
+      endMs: durationMs == null ? null : offsetMs + durationMs,
+      approximate: true
+    };
+  });
+}

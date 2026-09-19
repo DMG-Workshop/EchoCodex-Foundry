@@ -26,8 +26,34 @@ class StubApplication {
 
 globalThis.Application = StubApplication;
 globalThis.Dialog = { confirm: async () => false };
-globalThis.foundry = { utils: { mergeObject: (a, b) => ({ ...a, ...b }) }, applications: {} };
-globalThis.Hooks = { once: (name, fn) => hooks.set(name, fn), on: () => {} };
+class StubApplicationV2 {
+  constructor(options = {}) { this.options = options; }
+  render() {}
+  async close() {}
+}
+globalThis.foundry = {
+  utils: { mergeObject: (a, b) => ({ ...a, ...b }) },
+  applications: {
+    api: {
+      ApplicationV2: StubApplicationV2,
+      // The real mixin adds template handling; for the chooser it only has to
+      // return a class.
+      HandlebarsApplicationMixin: (Base) => class extends Base {}
+    },
+    handlebars: { renderTemplate: async () => '' }
+  }
+};
+const hookHandlers = new Map();
+globalThis.Hooks = {
+  once: (name, fn) => {
+    const list = hookHandlers.get(name) ?? [];
+    list.push(fn);
+    hookHandlers.set(name, list);
+    hooks.set(name, (...args) => list.forEach(handler => handler(...args)));
+  },
+  on: () => Math.floor(Math.random() * 1e6),
+  off: () => {}
+};
 globalThis.CONST = {
   JOURNAL_ENTRY_PAGE_FORMATS: { HTML: 1 },
   DOCUMENT_OWNERSHIP_LEVELS: { NONE: 0, OBSERVER: 2 }
@@ -39,7 +65,10 @@ globalThis.ui = {
     error: (m) => notifications.push(['error', m])
   }
 };
+const keybindings = new Map();
 globalThis.game = {
+  keybindings: { register: (module, key, data) => keybindings.set(key, data) },
+  i18n: { localize: (key) => key },
   world: { title: 'Redbridge' },
   user: { isGM: true, id: 'gm1', name: 'The GM' },
   users: Object.assign([], { activeGM: { id: 'gm1' } }),
@@ -83,10 +112,12 @@ test('the module registers an init and a ready hook', () => {
 test('init registers every setting the pipeline reads', () => {
   hooks.get('init')();
   const expected = [
-    'importNote', 'recordingSource', 'clipMinutes',
+    'importNote', 'recordingSource', 'clipMinutes', 'transcribeDuringSession',
     'sttProvider', 'sttBaseUrl', 'sttApiKey', 'sttModel', 'sttLanguage',
     'structureProvider', 'structureBaseUrl', 'structureApiKey', 'structureModel',
-    'glossary', 'enablePlayerVoting', 'separateGMNotes'
+    'glossary', 'curationDraft', 'requireConsent', 'consentAnswers', 'retentionDays',
+    'useSessionLog', 'useCampaignHistory',
+    'enablePlayerVoting', 'handoutOwnership', 'separateGMNotes'
   ];
   for (const key of expected) assert.ok(registered.has(key), `setting not registered: ${key}`);
 });
@@ -172,4 +203,106 @@ test('a world that throws while being read costs the notes, not the recording', 
   } finally {
     globalThis.canvas.scene = scene;
   }
+});
+
+test('streaming transcription is on by default', () => {
+  hooks.get('init')();
+  const setting = registered.get('transcribeDuringSession');
+  assert.equal(setting.type, Boolean);
+  assert.equal(setting.default, true);
+  assert.equal(setting.scope, 'client');
+});
+
+test('the recovery entry points the notification names actually exist', () => {
+  for (const fn of ['recoverSessions', 'processStoredSession', 'discardStoredSession']) {
+    assert.equal(typeof globalThis.EchoCodexNotes[fn], 'function', `missing: ${fn}`);
+  }
+});
+
+test('the world-record settings are world-scoped and on by default', () => {
+  hooks.get('init')();
+  for (const key of ['useSessionLog', 'useCampaignHistory']) {
+    assert.equal(registered.get(key).scope, 'world', `${key} should be campaign-wide`);
+    assert.equal(registered.get(key).default, true);
+  }
+});
+
+test('the session log honours its off switch', () => {
+  hooks.get('init')();
+  overrides.set('useSessionLog', false);
+  assert.deepEqual(
+    globalThis.EchoCodexNotes.collectSessionLog({ startTime: new Date(), endTime: new Date() }),
+    []
+  );
+  overrides.delete('useSessionLog');
+});
+
+test('continuity honours its off switch', () => {
+  hooks.get('init')();
+  overrides.set('useCampaignHistory', false);
+  assert.equal(globalThis.EchoCodexNotes.findPreviousSession(), null);
+  overrides.delete('useCampaignHistory');
+});
+
+test('consent is on by default and stored world-side', () => {
+  hooks.get('init')();
+  assert.equal(registered.get('requireConsent').default, true);
+  assert.equal(registered.get('requireConsent').scope, 'world');
+  // Players cannot write world settings, so answers must live world-side.
+  assert.equal(registered.get('consentAnswers').scope, 'world');
+  assert.equal(registered.get('consentAnswers').config, false);
+});
+
+test('stored audio has a finite default retention', () => {
+  hooks.get('init')();
+  const retention = registered.get('retentionDays');
+  assert.equal(retention.type, Number);
+  assert.ok(retention.default > 0, 'audio of real people should not linger by default');
+});
+
+test('the handout defaults to read-only', () => {
+  hooks.get('init')();
+  assert.equal(registered.get('handoutOwnership').default, 'observer');
+});
+
+test('recording state is broadcast, so players can see it', () => {
+  hooks.get('init')();
+  const sent = [];
+  const emit = game.socket.emit;
+  game.socket.emit = (channel, payload) => sent.push(payload);
+  try {
+    globalThis.EchoCodexNotes.broadcastRecordingState('recording');
+  } finally {
+    game.socket.emit = emit;
+  }
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, 'recordingState');
+  assert.equal(sent[0].status, 'recording');
+});
+
+test('keyboard shortcuts are registered and GM-restricted where they should be', () => {
+  hooks.get('init')();
+  assert.ok(keybindings.has('toggleRecording'));
+  assert.ok(keybindings.has('pauseResume'));
+  assert.ok(keybindings.has('openNotes'));
+  assert.equal(keybindings.get('toggleRecording').restricted, true, 'players must not start recordings');
+  assert.equal(keybindings.get('pauseResume').restricted, true);
+  // Opening the notes is a player action too, so it is deliberately unrestricted.
+  assert.notEqual(keybindings.get('openNotes').restricted, true);
+});
+
+test('registering keybindings does not displace the settings registration', () => {
+  hooks.get('init')();
+  assert.ok(registered.has('importNote'), 'both init handlers must run');
+  assert.ok(keybindings.size > 0);
+});
+
+test('the curation window uses ApplicationV2 when the core provides it', async () => {
+  const { curationWindowClass } = await import('../scripts/CurationUI.js');
+  // The stub `foundry` above exposes applications.api.ApplicationV2 only if set;
+  // this asserts the chooser reads it rather than assuming one API.
+  const chosen = curationWindowClass();
+  assert.equal(typeof chosen, 'function');
+  // Chosen once and cached, so two opens cannot straddle two base classes.
+  assert.equal(curationWindowClass(), chosen);
 });

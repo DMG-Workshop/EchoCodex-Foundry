@@ -44,6 +44,42 @@ paths produce the same shape of notes. `scripts/noteDocumentSchema.js` is
 generated from `docs/schemas/note-document.schema.json` in the main EchoCodex
 repository — regenerate it rather than editing by hand.
 
+### Transcribing as you play
+
+By default each clip is transcribed the moment it closes, while the game
+continues. A four-hour session would otherwise end with twenty-odd sequential
+uploads and the table watching a spinner; this way most of the work is done
+before anyone says "that's a wrap", and a wrong API key shows up ten minutes in
+rather than at the end of the night.
+
+Clips go up one at a time, not in parallel, so transcription does not compete
+with voice chat for bandwidth. The tail of each transcript is passed as context
+for the next clip, which is what keeps a sentence severed by a rotation boundary
+from being transcribed cold. A clip that fails does not stop the queue — the
+rest still transcribe, and the notes say which stretches are missing.
+
+Turn off **Transcribe during the session** to keep the table entirely offline
+until the game ends.
+
+Structuring still happens once, at the end, and deliberately so: judging what
+the party actually committed to — as opposed to what they weighed aloud and
+dropped — needs the whole session. A decision made in the first hour and
+reversed in the fourth would otherwise be recorded twice, as two decisions.
+
+### Recovering an interrupted session
+
+Clips are written to browser storage as they are recorded, so a refresh, a
+crashed tab or a failed upload run no longer loses the session. The GM is told
+on load when an unfinished recording is waiting, and it can be picked back up:
+
+```js
+EchoCodexNotes.recoverSessions()                  // what is stored
+EchoCodexNotes.processStoredSession('<sessionId>') // turn it into notes
+EchoCodexNotes.discardStoredSession('<sessionId>') // throw it away
+```
+
+Stored clips are deleted once they have successfully become notes.
+
 ### Keeping audio local
 
 Both stages take a base URL. Point the transcription endpoint at a local
@@ -74,6 +110,35 @@ world-scoped, so it follows the campaign rather than the GM's browser. Setting
 **Spoken language** is worth it too: left blank, each clip is detected
 independently, and a quiet clip can come back as the wrong language.
 
+## What Foundry already knows
+
+The transcript is a guess at what was said. The world's own record is not — chat
+was typed, dice rolls happened, combats started, scenes changed, all timestamped
+and none of it subject to mishearing. That record is folded in on the same clock
+as the transcript, so the model can anchor against it and correct names, numbers
+and the order of events where the two disagree.
+
+**Whispers are never included.** A private message between the GM and one player
+is not table record, and putting it into shared notes would publish it.
+
+Under budget pressure the session's skeleton wins: scene and combat changes are
+kept ahead of the hundredth attack roll. And the log is presented as evidence
+rather than narrative — a roll is not a story beat, and nothing there becomes a
+decision unless the transcript shows the table making one.
+
+Turn off with **Use the table's own records**.
+
+### Between sessions
+
+Each exported GM journal carries forward a small continuity record — the
+summary, the loose threads, what the party said they would do. The next session
+is given it as background, so an NPC met three weeks ago is not re-introduced as
+a stranger and names stay consistent.
+
+It is explicitly marked as background rather than source: nothing from last week
+enters this week's notes unless this week's transcript shows it happening again.
+Turn off with **Carry continuity between sessions**.
+
 ## Curation
 
 After processing, the GM gets a checklist of everything the model extracted —
@@ -88,6 +153,15 @@ each as its own row:
 - Each row shows the verbatim transcript quote it came from, so you can tell a
   real beat from a mishearing.
 
+Curation autosaves as you work, so a closed tab or a crashed browser no longer
+costs a pass over a four-hour session — the GM is offered the unfinished list
+again on next load. **Undo** steps back through merges and bulk changes.
+
+For a long session there is a filter box, per-group check-all/none, and
+**Uncheck voted-down**, which acts on rows the table clearly voted against (at
+least two votes, more drops than keeps). It is still only a shortcut: the rows
+are unchecked, not deleted, and the GM decides.
+
 Players can open the same list and vote Keep/Drop on each row. Votes are
 advisory — they sync to the GM, who decides what actually ships.
 
@@ -95,12 +169,64 @@ GM-only rows are removed from the socket payload before it is sent, not hidden
 by the template: the message lands in every player's browser, where anything
 merely hidden is one console command away.
 
+## Recording people
+
+This module records the voices of everyone at the table, so the table should be
+able to tell. The sidebar indicator now shows the live recording state on
+**every** client, not just the GM's — a red pulsing dot while recording, amber
+while paused. Previously the indicator existed on player clients but never
+changed, because status was never sent anywhere.
+
+Each player is asked once, per world, whether they are comfortable being
+recorded. The answer is remembered, so nobody is prompted on every reload —
+a notice people learn to dismiss is not consent.
+
+If someone objects, the GM is warned before recording starts and has to confirm.
+This is deliberately **not** enforced by muting anyone: the module cannot
+separate one voice from a shared room, so quietly "excluding" a player would be
+a false promise. What it can do is make the objection impossible to miss and
+leave the decision with the person running the table.
+
+Turn the whole flow off with **Ask players before recording** if your table has
+settled this some other way.
+
+### Retention
+
+Stored audio from interrupted sessions is deleted after **Keep recordings for**
+days (14 by default; 0 keeps it until you delete it). Audio is always deleted as
+soon as it has successfully become notes — the retention window only covers
+recordings that never got that far.
+
 ## Export
 
 With **Separate GM notes** on (default), exporting creates two Journal Entries
 in an `Echo Codex — <campaign>` folder: a GM-only entry with everything, and a
 player-facing handout with the GM-only rows removed. Turn the setting off to
 get a single journal visible to the whole table.
+
+## Linked, costed, and continuous
+
+Names the world already knows become `@UUID` links in the exported journal, so
+the notes wire into the actors and journals they mention instead of being flat
+text. Matching is conservative — whole words, longest name first, one link per
+entity per line — because a journal riddled with links to the wrong goblin is
+worse than no links.
+
+The GM copy also keeps the **Transcript** as its own page. The player handout
+does not: the transcript is the unfiltered room, including whatever was said
+before anyone decided it was in character.
+
+Before a paid run, a rough **cost estimate** is shown as a range. It is an
+estimate and says so — prices move and providers differ, and a confident wrong
+number is worse than an honest range. Set all three prices to 0, or point at a
+local endpoint, and the prompt disappears entirely.
+
+`EchoCodexNotes.buildCampaignIndex()` assembles a rolling "campaign so far"
+journal from every session's continuity record, with the threads nobody has
+resolved yet collected at the end.
+
+Recording follows Foundry's own pause by default, so a break stays out of the
+transcript without anyone remembering to press anything.
 
 ## Install
 
@@ -116,10 +242,16 @@ synced to players. Configure per stage in module settings:
 |---|---|
 | Recording source | Microphone, system audio, or both mixed |
 | Clip length | Minutes per audio clip (default 10). 0 records one file |
+| Transcribe during the session | Transcribe each clip as it closes (default on) |
 | Transcription provider / endpoint / key / model | OpenAI-compatible (default `whisper-1`) or Gemini |
 | Spoken language | ISO-639-1 code, or blank to detect per clip |
 | Structuring provider / endpoint / key / model | Claude (default `claude-opus-5`), OpenAI-compatible, or Gemini |
 | Campaign glossary | Names to feed both stages. World-scoped, not a secret |
+| Use the table's own records | Fold in chat, rolls, scene and combat changes |
+| Carry continuity between sessions | Give the model last session's summary and threads |
+| Ask players before recording | One-time consent notice per player |
+| Keep recordings for (days) | Retention for interrupted sessions (default 14) |
+| Player handout permission | Whether players can read, or read and edit |
 | Enable player voting | Lets players vote on rows |
 | Separate GM notes | GM journal + player handout, or one shared journal |
 
@@ -127,6 +259,24 @@ Calling a cloud AI provider straight from a browser means the key is present in
 client-side code. That is acceptable for a GM running their own world on their
 own machine; it is not a pattern to reuse for a public deployment. A local
 endpoint avoids the question entirely.
+
+## Controls
+
+The module adds an **Echo Codex** scene-control group (start, pause, resume,
+stop, notes) and keyboard shortcuts:
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+R` | Start, or stop and process |
+| `Ctrl+Shift+P` | Pause or resume |
+| `Ctrl+Shift+N` | Open session notes |
+
+All rebindable in Foundry's own keybinding settings. The first two are
+GM-restricted; opening the notes is not, since players read them too.
+
+Interface strings live in `lang/en.json` and go through Foundry's localization,
+with an English fallback so a missing translation shows readable text rather
+than a raw key.
 
 ## Macros
 
@@ -141,6 +291,18 @@ Create Script Macros with these one-liners:
 | View session notes (players) | `EchoCodexNotes.openCuration()` |
 
 Clicking the Echo Codex indicator in the sidebar does the same as the last one.
+
+## Foundry versions
+
+The curation window runs on **ApplicationV2** where the core provides it (v13+)
+and falls back to the older `Application` on v12, which the manifest still
+supports. `Dialog` and `renderTemplate` are picked the same way.
+
+That is affordable because the behaviour is not in either window class. It lives
+in `scripts/CurationController.js`, which has no Foundry in it at all, and the
+two shells are thin adapters over it — one `_prepareContext`/`_onRender`, one
+`getData`/`activateListeners`, same markup underneath. It is also why the
+curation logic is now tested: it used to be unreachable outside a browser.
 
 ## Development
 

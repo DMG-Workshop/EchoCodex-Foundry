@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseTermList, collectVocabulary, buildWhisperPrompt, renderVocabularySection,
-  WHISPER_PROMPT_MAX_CHARS, DEFAULT_TERM_LIMIT
+  buildClipPrompt, WHISPER_PROMPT_MAX_CHARS, DEFAULT_TERM_LIMIT
 } from '../scripts/vocabulary.js';
 
 test('parseTermList splits on the separators a GM actually types', () => {
@@ -108,4 +108,35 @@ test('renderVocabularySection names the anti-fabrication rule, not just the list
 test('renderVocabularySection adds nothing when there is no vocabulary', () => {
   assert.equal(renderVocabularySection([]), '');
   assert.equal(renderVocabularySection(undefined), '');
+});
+
+test('buildClipPrompt carries both the names and where the last clip left off', () => {
+  const prompt = buildClipPrompt({
+    vocabulary: ['Mira Stonehand'],
+    previousTail: 'and then the gate slammed shut behind'
+  });
+  assert.match(prompt, /Mira Stonehand/);
+  assert.match(prompt, /gate slammed shut behind$/);
+});
+
+test('buildClipPrompt works with only a vocabulary, or only a tail', () => {
+  assert.match(buildClipPrompt({ vocabulary: ['Mira'] }), /Mira/);
+  assert.equal(buildClipPrompt({ previousTail: 'just the tail' }), 'just the tail');
+  assert.equal(buildClipPrompt({}), '');
+});
+
+test('buildClipPrompt stays inside the Whisper budget with both halves full', () => {
+  const prompt = buildClipPrompt({
+    vocabulary: Array.from({ length: 400 }, (_, i) => `Name Number ${i}`),
+    previousTail: 'z'.repeat(5000)
+  });
+  assert.ok(prompt.length <= WHISPER_PROMPT_MAX_CHARS, `prompt was ${prompt.length} chars`);
+});
+
+test('a long tail cannot crowd the names out entirely', () => {
+  const prompt = buildClipPrompt({
+    vocabulary: ['Mira Stonehand'],
+    previousTail: 'z'.repeat(5000)
+  });
+  assert.match(prompt, /Mira Stonehand/, 'the reserve keeps room for the names');
 });

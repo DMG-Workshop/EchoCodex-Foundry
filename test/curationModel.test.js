@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  flattenDocument, groupRows, tally, formatRow, redactForPlayers, canMerge, GROUPS
+  flattenDocument, groupRows, tally, formatRow, redactForPlayers, canMerge, GROUPS,
+  votedDown, filterRows, snapshot
 } from '../scripts/curationModel.js';
 
 const ref = (quote) => ({ startMs: 1000, endMs: 2000, quote });
@@ -102,4 +103,64 @@ test('canMerge requires two rows of the same kind', () => {
   assert.equal(canMerge([{ kind: 'task' }]), false);
   assert.equal(canMerge([{ kind: 'task' }, { kind: 'decision' }]), false);
   assert.equal(canMerge([{ kind: 'task' }, { kind: 'task' }]), true);
+});
+
+test('votedDown needs a real quorum, not one grumpy player', () => {
+  const rows = [
+    { id: 'r0', votes: { a: 'drop' } },
+    { id: 'r1', votes: { a: 'drop', b: 'drop' } },
+    { id: 'r2', votes: { a: 'drop', b: 'keep' } },
+    { id: 'r3', votes: { a: 'drop', b: 'drop', c: 'keep' } }
+  ];
+  assert.deepEqual(votedDown(rows).map(r => r.id), ['r1', 'r3']);
+});
+
+test('a tied vote is not a mandate to drop', () => {
+  assert.deepEqual(votedDown([{ id: 'r0', votes: { a: 'drop', b: 'keep' } }]), []);
+});
+
+test('votedDown ignores rows nobody voted on', () => {
+  assert.deepEqual(votedDown([{ id: 'r0' }, { id: 'r1', votes: {} }]), []);
+});
+
+test('filterRows searches text, detail, heading, assignee and quote', () => {
+  const rows = [
+    { id: 'r0', text: 'Take the river road' },
+    { id: 'r1', text: 'Something else', detail: 'about the river' },
+    { id: 'r2', text: 'Another', heading: 'River crossing' },
+    { id: 'r3', text: 'Task', assignee: 'Riverwind' },
+    { id: 'r4', text: 'Quoted', sourceRef: { quote: 'we ford the river' } },
+    { id: 'r5', text: 'Unrelated' }
+  ];
+  assert.deepEqual(filterRows(rows, 'river').map(r => r.id), ['r0', 'r1', 'r2', 'r3', 'r4']);
+});
+
+test('filtering is case-insensitive and ignores surrounding space', () => {
+  const rows = [{ id: 'r0', text: 'Take the River Road' }];
+  assert.equal(filterRows(rows, '  rIvEr  ').length, 1);
+});
+
+test('an empty filter returns everything unchanged', () => {
+  const rows = [{ id: 'r0', text: 'a' }];
+  assert.equal(filterRows(rows, ''), rows);
+  assert.equal(filterRows(rows, null), rows);
+});
+
+test('a filter matching nothing returns nothing', () => {
+  assert.deepEqual(filterRows([{ id: 'r0', text: 'a' }], 'zzz'), []);
+});
+
+test('a snapshot survives mutation of the original rows', () => {
+  const rows = [{ id: 'r0', text: 'before', included: true, votes: { a: 'keep' } }];
+  const saved = snapshot(rows);
+
+  rows[0].text = 'after';
+  rows[0].included = false;
+  rows[0].votes.a = 'drop';
+  rows.push({ id: 'r1' });
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].text, 'before');
+  assert.equal(saved[0].included, true);
+  assert.equal(saved[0].votes.a, 'keep', 'votes must be copied, not shared by reference');
 });

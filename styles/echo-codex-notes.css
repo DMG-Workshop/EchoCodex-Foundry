@@ -154,3 +154,53 @@
   color: #d9822b;
   font-style: italic;
 }
+
+/* Transcription catching up behind the recording. */
+.echo-codex-indicator .status-detail {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The table must be able to see that it is being recorded, not just the GM. */
+.echo-codex-indicator.status-recording .status-dot {
+  background: #d64545;
+  box-shadow: 0 0 0 3px rgba(214, 69, 69, 0.25);
+  animation: echo-codex-pulse 2s ease-in-out infinite;
+}
+
+.echo-codex-indicator.status-paused .status-dot {
+  background: #d6a445;
+}
+
+@keyframes echo-codex-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .echo-codex-indicator.status-recording .status-dot { animation: none; }
+}
+
+/* A long session produces a lot of rows; these keep it navigable. */
+.curation-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.curation-toolbar .row-filter { flex: 1; }
+.curation-toolbar .filter-note { opacity: 0.7; font-size: 0.85em; }
+
+.row-group h3 .group-bulk {
+  float: right;
+  font-weight: normal;
+  font-size: 0.8em;
+  opacity: 0.8;
+}
+
+.row-group h3 .group-bulk button {
+  width: auto;
+  line-height: 1.4;
+  padding: 0 0.4em;
+}

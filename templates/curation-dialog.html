@@ -6,13 +6,33 @@
   </header>
   {{/if}}
 
+  {{#if isGM}}
+  <div class="curation-toolbar">
+    <input type="search" class="row-filter" value="{{filter}}" placeholder="Filter items…" />
+    {{#if filtered}}<span class="filter-note">showing matches of {{totalCount}}</span>{{/if}}
+    {{#if votedDownCount}}
+    <button type="button" class="drop-voted-down" title="Uncheck items the table voted down">
+      Uncheck voted-down ({{votedDownCount}})
+    </button>
+    {{/if}}
+  </div>
+  {{/if}}
+
   {{#unless hasRows}}
   <p class="empty-state">No session notes yet. The GM sees them here once a recording has been processed.</p>
   {{/unless}}
 
   {{#each groups}}
   <section class="row-group">
-    <h3>{{label}}</h3>
+    <h3>
+      {{label}}
+      {{#if ../isGM}}
+      <span class="group-bulk">
+        <button type="button" class="bulk-include" data-group-key="{{key}}" title="Check all in this group">all</button>
+        <button type="button" class="bulk-exclude" data-group-key="{{key}}" title="Uncheck all in this group">none</button>
+      </span>
+      {{/if}}
+    </h3>
     <ul class="row-list">
       {{#each rows}}
       <li class="curation-row {{#if gmOnly}}gm-only{{/if}} {{#unless included}}excluded{{/unless}}" data-row-id="{{id}}">
@@ -49,6 +69,7 @@
   {{#if isGM}}
   <footer class="curation-actions">
     <span class="included-count">{{includedCount}} checked</span>
+    <button type="button" class="undo-curation" {{#unless canUndo}}disabled{{/unless}}>Undo</button>
     <button type="button" class="merge-selected" {{#unless mergeCount}}disabled{{/unless}}>Merge ({{mergeCount}})</button>
     <button type="button" class="export-notes">Export to journal</button>
   </footer>
