@@ -126,8 +126,22 @@ No dependencies — the suite runs on Node's built-in test runner against the sa
 files Foundry loads. It covers the pure layers (curation model, transcript
 stitching, schema conversion, journal HTML) and boots the real entry point
 against a stubbed Foundry to catch import-time breakage. CI runs it on every
-push; tagging `v<version>` builds the zip and manifest that `module.json` points
-at, after checking the tag matches the version in the manifest.
+push.
+
+### Cutting a release
+
+Bump the version in `module.json` and `package.json`, then either:
+
+- **push a tag** — `git tag -a v0.3.0 -m "…" && git push origin v0.3.0`, or
+- **run it from the Actions tab** — *Release* → *Run workflow*, entering the
+  version (`0.3.0`). The workflow creates the tag itself, which is the way in
+  when tags cannot be pushed from where the release is being cut.
+
+Either route runs the tests, refuses to publish if the version does not match
+`module.json`, pins the manifest's `download` to the tag, and attaches
+`echo-codex-notes.zip` and `module.json` to the release. A dispatch also refuses
+a version whose tag already exists, rather than swapping the files under anyone
+who installed it.
 
 ## Status
 
