@@ -292,6 +292,18 @@ Create Script Macros with these one-liners:
 
 Clicking the Echo Codex indicator in the sidebar does the same as the last one.
 
+## Foundry versions
+
+The curation window runs on **ApplicationV2** where the core provides it (v13+)
+and falls back to the older `Application` on v12, which the manifest still
+supports. `Dialog` and `renderTemplate` are picked the same way.
+
+That is affordable because the behaviour is not in either window class. It lives
+in `scripts/CurationController.js`, which has no Foundry in it at all, and the
+two shells are thin adapters over it — one `_prepareContext`/`_onRender`, one
+`getData`/`activateListeners`, same markup underneath. It is also why the
+curation logic is now tested: it used to be unreachable outside a browser.
+
 ## Development
 
 ```

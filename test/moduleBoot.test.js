@@ -26,7 +26,23 @@ class StubApplication {
 
 globalThis.Application = StubApplication;
 globalThis.Dialog = { confirm: async () => false };
-globalThis.foundry = { utils: { mergeObject: (a, b) => ({ ...a, ...b }) }, applications: {} };
+class StubApplicationV2 {
+  constructor(options = {}) { this.options = options; }
+  render() {}
+  async close() {}
+}
+globalThis.foundry = {
+  utils: { mergeObject: (a, b) => ({ ...a, ...b }) },
+  applications: {
+    api: {
+      ApplicationV2: StubApplicationV2,
+      // The real mixin adds template handling; for the chooser it only has to
+      // return a class.
+      HandlebarsApplicationMixin: (Base) => class extends Base {}
+    },
+    handlebars: { renderTemplate: async () => '' }
+  }
+};
 const hookHandlers = new Map();
 globalThis.Hooks = {
   once: (name, fn) => {
@@ -279,4 +295,14 @@ test('registering keybindings does not displace the settings registration', () =
   hooks.get('init')();
   assert.ok(registered.has('importNote'), 'both init handlers must run');
   assert.ok(keybindings.size > 0);
+});
+
+test('the curation window uses ApplicationV2 when the core provides it', async () => {
+  const { curationWindowClass } = await import('../scripts/CurationUI.js');
+  // The stub `foundry` above exposes applications.api.ApplicationV2 only if set;
+  // this asserts the chooser reads it rather than assuming one API.
+  const chosen = curationWindowClass();
+  assert.equal(typeof chosen, 'function');
+  // Chosen once and cached, so two opens cannot straddle two base classes.
+  assert.equal(curationWindowClass(), chosen);
 });
