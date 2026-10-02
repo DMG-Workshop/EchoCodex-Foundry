@@ -72,3 +72,18 @@ test('no script carries a leftover API key or endpoint override', () => {
     assert.ok(!/sk-[a-zA-Z0-9]{20,}/.test(source), `${file} looks like it contains a real API key`);
   }
 });
+
+test('the shakedown checklist exists and the README points at it', () => {
+  // The checklist is the only thing standing in for a live run; a README that
+  // stops linking it is how it rots unread.
+  const checklist = resolve(root, 'docs/SHAKEDOWN.md');
+  assert.ok(existsSync(checklist), 'docs/SHAKEDOWN.md is missing');
+
+  const readme = readFileSync(resolve(root, 'README.md'), 'utf8');
+  assert.match(readme, /docs\/SHAKEDOWN\.md/, 'the README must link the checklist');
+
+  const body = readFileSync(checklist, 'utf8');
+  // The two checks whose silent failure matters most must stay in it.
+  assert.match(body, /fabrication/i, 'the fabrication check must stay in the checklist');
+  assert.match(body, /GM-only row is absent from the player/i, 'the leak check must stay');
+});
