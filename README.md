@@ -333,6 +333,13 @@ who installed it.
 
 ## Status
 
+Before trusting this at a real table, work through
+[`docs/SHAKEDOWN.md`](docs/SHAKEDOWN.md). It is the deliberate version of the
+first run: what to set, what you should see at each stage, and what each
+failure looks like. Setting **Clip length** to 1 means a three-minute recording
+covers the same code a four-hour one does, so it costs minutes rather than an
+evening.
+
 All three structuring providers are implemented, and the pipeline is covered by
 tests end to end except for the two network calls themselves.
 
